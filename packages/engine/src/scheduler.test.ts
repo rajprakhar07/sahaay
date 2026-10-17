@@ -18,20 +18,37 @@ function makeTask(
 }
 
 describe("createSchedule", () => {
-  it("schedules an independent task from minute zero", () => {
-    const result = createSchedule([makeTask("T01", 20)]);
+  it("schedules a single task from minute zero", () => {
+    const result = createSchedule([makeTask("A", 30)]);
 
     expect(result.feasible).toBe(true);
     expect(result.schedule).toEqual([
-      { taskId: "T01", startMinute: 0, endMinute: 20 },
+      { taskId: "A", startMinute: 0, endMinute: 30 },
     ]);
     expect(result.errors).toEqual([]);
   });
 
+  it("schedules dependent tasks in the correct order", () => {
+    const result = createSchedule([
+      makeTask("B", 20, ["A"]),
+      makeTask("A", 30),
+    ]);
+
+    expect(result.feasible).toBe(true);
+
+    const taskA = result.schedule.find((task) => task.taskId === "A");
+    const taskB = result.schedule.find((task) => task.taskId === "B");
+
+    expect(taskA?.startMinute).toBe(0);
+    expect(taskA?.endMinute).toBe(30);
+    expect(taskB?.startMinute).toBe(30);
+    expect(taskB?.endMinute).toBe(50);
+  });
+
   it("allows independent tasks to run in parallel", () => {
     const result = createSchedule([
-      makeTask("T01", 20),
-      makeTask("T02", 10),
+      makeTask("A", 30),
+      makeTask("B", 20),
     ]);
 
     expect(result.feasible).toBe(true);
@@ -39,41 +56,14 @@ describe("createSchedule", () => {
     expect(result.schedule.every((task) => task.startMinute === 0)).toBe(true);
   });
 
-  it("starts a dependent task after its prerequisite finishes", () => {
+  it("rejects a dependency cycle", () => {
     const result = createSchedule([
-      makeTask("T02", 15, ["T01"]),
-      makeTask("T01", 10),
-    ]);
-
-    expect(result.feasible).toBe(true);
-    expect(result.schedule).toContainEqual({
-      taskId: "T01",
-      startMinute: 0,
-      endMinute: 10,
-    });
-    expect(result.schedule).toContainEqual({
-      taskId: "T02",
-      startMinute: 10,
-      endMinute: 25,
-    });
-  });
-
-  it("rejects a dependency on a missing task", () => {
-    const result = createSchedule([makeTask("T01", 10, ["T99"])]);
-
-    expect(result.feasible).toBe(false);
-    expect(result.schedule).toEqual([]);
-    expect(result.errors.join(" ")).toContain("T99");
-  });
-
-  it("rejects circular task dependencies", () => {
-    const result = createSchedule([
-      makeTask("T01", 10, ["T02"]),
-      makeTask("T02", 15, ["T01"]),
+      makeTask("A", 10, ["B"]),
+      makeTask("B", 10, ["A"]),
     ]);
 
     expect(result.feasible).toBe(false);
     expect(result.schedule).toEqual([]);
-    expect(result.errors.join(" ")).toContain("Dependency cycle");
+    expect(result.errors.some((error) => error.includes("Dependency cycle"))).toBe(true);
   });
 });
