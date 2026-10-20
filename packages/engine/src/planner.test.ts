@@ -143,3 +143,33 @@ describe("createPlan integration", () => {
     expect(result.feasible).toBe(false);
   });
 });
+
+// Regression test: audit D2
+describe("createPlan issue reporting (audit D2)", () => {
+  it("lists a task that is both unassignable and blocked only once", () => {
+    const tasks = [
+      task({
+        id: "t1",
+        title: "Needs a skill nobody has",
+        requiredSkills: ["specialist skill"],
+      }),
+      task({
+        id: "t2",
+        title: "Needs it too and depends on t1",
+        requiredSkills: ["specialist skill"],
+        dependsOnTaskIds: ["t1"],
+      }),
+    ];
+
+    const result = createPlan(tasks, people);
+
+    for (const id of ["t1", "t2"]) {
+      expect(
+        result.unassignedTasks.filter((item) => item.taskId === id),
+      ).toHaveLength(1);
+    }
+
+    expect(result.complete).toBe(false);
+    expect(result.schedule).toHaveLength(0);
+  });
+});

@@ -31,9 +31,22 @@ export interface RecoveryResult {
 }
 
 function assertKnownTarget(
+
+
   disruption: Disruption,
   plan: HouseholdPlan,
 ): void {
+      const type = (disruption as { type?: unknown } | null)?.type;
+
+  if (
+    type !== "person_unavailable" &&
+    type !== "resource_unavailable" &&
+    type !== "location_inaccessible"
+  ) {
+    throw new RangeError(
+      `Unsupported disruption type "${String(type)}".`,
+    );
+  }
   if (
     disruption.type === "person_unavailable" &&
     !plan.people.some((person) => person.id === disruption.personId)
@@ -113,12 +126,14 @@ export function recoverPlan(
         break;
     }
   }
+const scenarioPeople = household.people.map((person) => ({
+  ...person,
+  available: unavailablePersonIds.has(person.id)
+    ? false
+    : person.available,
+  skills: [...person.skills],
+}));
 
-  const scenarioPeople = household.people.map((person) =>
-    unavailablePersonIds.has(person.id)
-      ? { ...person, available: false }
-      : { ...person },
-  );
 
   const scenarioResources = household.resources.map((resource) =>
     unavailableResourceIds.has(resource.id)
@@ -183,11 +198,19 @@ export function recoverPlan(
     scenarioResources,
   );
 
-  const unresolvedRisks = mergeIssues([
-    ...plannedRecovery.unassignedTasks,
-    ...excludedIssues,
-  ]);
+const schedulingFailureIssues: PlanningIssue[] =
+  plannedRecovery.schedulingErrors.length > 0
+    ? household.tasks.map((task) => ({
+        taskId: task.id,
+        reason: `Plan-level scheduling failure: ${plannedRecovery.schedulingErrors.join("; ")}`,
+      }))
+    : [];
 
+const unresolvedRisks = mergeIssues([
+  ...plannedRecovery.unassignedTasks,
+  ...schedulingFailureIssues,
+  ...excludedIssues,
+]);
   // A recovery is complete only if every original task is scheduled.
   const scheduledIds = new Set(
   plannedRecovery.schedule.map((entry) => entry.taskId),
@@ -212,11 +235,12 @@ const hasDuplicateTaskIds = new Set(taskIds).size !== taskIds.length;
 
   const recovered =
   household.tasks.length > 0 &&
+  plannedRecovery.schedule.length > 0 &&
   !hasDuplicateTaskIds &&
   requiredTasks.every((task) => scheduledIds.has(task.id)) &&
   plannedRecovery.validation.valid &&
   plannedRecovery.schedulingErrors.length === 0;
-  
+
   const recoveryPlan: PlanResult = {
     ...plannedRecovery,
     complete,

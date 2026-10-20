@@ -201,3 +201,57 @@ describe("assignTasks", () => {
     expect(result.assignments[0]?.reason).toBe("DUPLICATE_PERSON_ID");
   });
 });
+
+it("does not blame duplicate person IDs when only task IDs are duplicated", () => {
+  const tasks = [
+    makeTask({ id: "t1", title: "First copy" }),
+    makeTask({ id: "t1", title: "Second copy" }),
+    makeTask({ id: "t2", title: "Unrelated task" }),
+  ];
+
+  const result = assignTasks(tasks, people);
+
+  expect(result.complete).toBe(false);
+
+  const unrelatedTask = result.assignments.find(
+    (item) => item.taskId === "t2",
+  );
+
+  expect(unrelatedTask).toBeDefined();
+  expect(unrelatedTask?.reason).not.toBe("DUPLICATE_PERSON_ID");
+  expect(unrelatedTask?.explanation).not.toContain(
+    "Duplicate person IDs",
+  );
+});
+
+it("reports both duplicate-ID problems without assigning tasks", () => {
+  const duplicatePeople = [
+    people[0]!,
+    { ...people[0]!, name: "Duplicate Alice record" },
+  ];
+
+  const tasks = [
+    makeTask({ id: "t1", title: "First copy" }),
+    makeTask({ id: "t1", title: "Second copy" }),
+    makeTask({ id: "t2", title: "Unrelated task" }),
+  ];
+
+  const result = assignTasks(tasks, duplicatePeople);
+
+  expect(result.complete).toBe(false);
+  expect(result.assignments).toHaveLength(3);
+  expect(result.assignments.every((item) => !item.assigned)).toBe(true);
+
+  expect(
+    result.assignments
+      .filter((item) => item.taskId === "t1")
+      .every((item) => item.reason === "DUPLICATE_TASK_ID"),
+  ).toBe(true);
+
+  const unrelatedTask = result.assignments.find(
+    (item) => item.taskId === "t2",
+  );
+
+  expect(unrelatedTask?.reason).toBe("DUPLICATE_PERSON_ID");
+  expect(unrelatedTask?.explanation).toContain("Duplicate person IDs");
+});

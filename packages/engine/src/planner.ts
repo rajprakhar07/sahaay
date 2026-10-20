@@ -62,14 +62,22 @@ export function createPlan(
           assignmentById.get(dependencyId)?.assigned !== true,
       );
 
-      if (blockedDependency !== undefined) {
-        blockedIds.add(task.id);
-        unassignedTasks.push({
-          taskId: task.id,
-          reason: `Blocked because prerequisite "${blockedDependency}" is missing, ambiguous, or unassigned.`,
-        });
-        changed = true;
-      }
+     if (blockedDependency !== undefined) {
+  blockedIds.add(task.id);
+
+  const alreadyReported = unassignedTasks.some(
+    (issue) => issue.taskId === task.id,
+  );
+
+  if (!alreadyReported) {
+    unassignedTasks.push({
+      taskId: task.id,
+      reason: `Blocked because prerequisite "${blockedDependency}" is missing, ambiguous, or unassigned.`,
+    });
+  }
+
+  changed = true;
+}
     }
   }
 
@@ -80,11 +88,20 @@ export function createPlan(
         !blockedIds.has(task.id) &&
         assignmentById.get(task.id)?.assigned === true,
     )
-    .map((task) => {
+      .map((task) => {
       const personId = assignmentById.get(task.id)?.personId;
-      return personId === undefined
-        ? task
-        : { ...task, assignedPersonId: personId };
+
+      return {
+        ...task,
+        requiredSkills: [...task.requiredSkills],
+        dependsOnTaskIds: [...task.dependsOnTaskIds],
+        resourceNeeds: task.resourceNeeds.map((need) => ({
+          ...need,
+        })),
+        ...(personId === undefined
+          ? {}
+          : { assignedPersonId: personId }),
+      };
     });
 
   const scheduling = createSchedule(assignedTasks, { people, resources });

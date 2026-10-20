@@ -219,4 +219,174 @@ it("can recover all required tasks while an optional task remains unresolved", (
   expect(result.recoveryPlan.schedule.some((entry) => entry.taskId === "t3")).toBe(false);
   expect(result.unresolvedRisks.some((issue) => issue.taskId === "t3")).toBe(true);
 });
+it("reports both a directly blocked task and its dependent task", () => {
+  const household = makeHousehold();
+
+  const result = recoverPlan(household, [
+    { type: "resource_unavailable", resourceId: "r1" },
+  ]);
+
+  expect(result.recovered).toBe(false);
+
+  expect(
+    result.unresolvedRisks.some(
+      (issue) =>
+        issue.taskId === "t1" &&
+        issue.reason.includes("resource") &&
+        issue.reason.includes("unavailable"),
+    ),
+  ).toBe(true);
+
+  expect(
+    result.unresolvedRisks.some(
+      (issue) =>
+        issue.taskId === "t2" &&
+        issue.reason.includes("Blocked"),
+    ),
+  ).toBe(true);
+
+  expect(
+    result.recoveryPlan.schedule.some(
+      (entry) => entry.taskId === "t3",
+    ),
+  ).toBe(true);
+});
+});
+// Regression test: audit D3
+it("does not report recovery when no optional work can be scheduled", () => {
+  const household = makeHousehold();
+
+  household.tasks = household.tasks.map((task) => ({
+    ...task,
+    required: false,
+  }));
+
+  household.people = household.people.map((person) => ({
+    ...person,
+    available: false,
+  }));
+
+  const result = recoverPlan(household, []);
+
+  expect(result.recoveryPlan.schedule).toHaveLength(0);
+  expect(result.unresolvedRisks).toHaveLength(household.tasks.length);
+  expect(result.recovered).toBe(false);
+  expect(result.complete).toBe(false);
+});
+// Regression test: audit D4
+it("itemises tasks when a dependency cycle makes scheduling fail", () => {
+  const household = makeHousehold();
+
+  household.tasks = [
+    makeTask({
+      id: "a",
+      title: "Task A",
+      dependsOnTaskIds: ["b"],
+    }),
+    makeTask({
+      id: "b",
+      title: "Task B",
+      dependsOnTaskIds: ["a"],
+    }),
+  ];
+
+  const result = recoverPlan(household, []);
+
+  expect(result.recoveryPlan.schedulingErrors.length).toBeGreaterThan(0);
+  expect(result.recoveryPlan.schedule).toHaveLength(0);
+  expect(result.recovered).toBe(false);
+  expect(result.complete).toBe(false);
+
+  expect(
+    result.unresolvedRisks.map((issue) => issue.taskId).sort(),
+  ).toEqual(["a", "b"]);
+});
+// Regression test: audit D4 — resource over-demand
+it("itemises every task when resource demand exceeds stock", () => {
+  const household = makeHousehold();
+
+  household.tasks = [
+    makeTask({
+      id: "w1",
+      title: "First resource-intensive task",
+      resourceNeeds: [{ resourceId: "r2", quantity: 4 }],
+    }),
+    makeTask({
+      id: "w2",
+      title: "Second resource-intensive task",
+      resourceNeeds: [{ resourceId: "r2", quantity: 4 }],
+    }),
+    makeTask({
+      id: "free",
+      title: "Task without resource requirements",
+      resourceNeeds: [],
+    }),
+  ];
+
+  const result = recoverPlan(household, []);
+
+  expect(result.recoveryPlan.schedulingErrors.length).toBeGreaterThan(0);
+  expect(result.recoveryPlan.schedule).toHaveLength(0);
+  expect(result.recovered).toBe(false);
+  expect(result.complete).toBe(false);
+
+  expect(
+    result.unresolvedRisks.map((issue) => issue.taskId).sort(),
+  ).toEqual(["free", "w1", "w2"]);
+});
+// Regression test: audit D5 — unsupported disruption type
+it("rejects an unsupported disruption type", () => {
+  const invalidDisruption = {
+    type: "meteor_strike",
+    targetId: "p1",
+  } as unknown as Disruption;
+
+  expect(() =>
+    recoverPlan(makeHousehold(), [invalidDisruption]),
+  ).toThrow(RangeError);
+
+  expect(() =>
+    recoverPlan(makeHousehold(), [invalidDisruption]),
+  ).toThrow(/meteor_strike/);
+});
+
+
+ // Regression test: audit D6 — nested-state isolation
+it("does not share nested arrays between the household and recovery result", () => {
+  const household = makeHousehold();
+  const result = recoverPlan(household, []);
+
+  const scenarioPerson = result.scenario.people.find(
+    (person) => person.id === household.people[0]?.id,
+  );
+  const originalPerson = household.people[0];
+
+  const plannedTask = result.originalPlan.assignedTasks.find(
+    (task) => task.id === household.tasks[0]?.id,
+  );
+  const originalTask = household.tasks[0];
+
+  expect(scenarioPerson).toBeDefined();
+  expect(originalPerson).toBeDefined();
+  expect(plannedTask).toBeDefined();
+  expect(originalTask).toBeDefined();
+
+  if (!scenarioPerson || !originalPerson || !plannedTask || !originalTask) {
+    throw new Error("Expected sample household people and tasks to exist.");
+  }
+
+  expect(scenarioPerson.skills).not.toBe(originalPerson.skills);
+  expect(plannedTask.requiredSkills).not.toBe(originalTask.requiredSkills);
+  expect(plannedTask.resourceNeeds).not.toBe(originalTask.resourceNeeds);
+});
+
+// Regression test: audit D5 — missing disruption target
+it("rejects a person-unavailable disruption with a missing personId", () => {
+  const invalidDisruption = {
+    type: "person_unavailable",
+  } as unknown as Disruption;
+
+  expect(() =>
+    recoverPlan(makeHousehold(), [invalidDisruption]),
+  ).toThrow(RangeError);
 });

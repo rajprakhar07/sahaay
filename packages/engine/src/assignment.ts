@@ -8,7 +8,8 @@ export type AssignmentFailureReason =
   | "MISSING_REQUIRED_SKILLS"
   | "NO_ELIGIBLE_PERSON"
   | "DUPLICATE_TASK_ID"
-  | "DUPLICATE_PERSON_ID";
+  | "DUPLICATE_PERSON_ID"
+  | "ASSIGNMENT_ABORTED";
 
 
 export interface TaskAssignment {
@@ -80,16 +81,33 @@ export function assignTasks(
 
   if (duplicateTaskIds.size > 0 || duplicatePersonIds.size > 0) {
     return {
-      assignments: tasks.map((task) => ({
-        taskId: task.id,
-        assigned: false,
-        reason: duplicateTaskIds.has(task.id)
-          ? "DUPLICATE_TASK_ID"
-          : "DUPLICATE_PERSON_ID",
-        explanation: duplicateTaskIds.has(task.id)
-          ? `Task ID "${task.id}" appears more than once.`
-          : "Duplicate person IDs make assignments ambiguous.",
-      })),
+      assignments: tasks.map((task) => {
+        if (duplicateTaskIds.has(task.id)) {
+          return {
+            taskId: task.id,
+            assigned: false,
+            reason: "DUPLICATE_TASK_ID" as const,
+            explanation: `Task ID "${task.id}" appears more than once.`,
+          };
+        }
+
+        if (duplicatePersonIds.size > 0) {
+          return {
+            taskId: task.id,
+            assigned: false,
+            reason: "DUPLICATE_PERSON_ID" as const,
+            explanation: "Duplicate person IDs make assignments ambiguous.",
+          };
+        }
+
+        return {
+          taskId: task.id,
+          assigned: false,
+          reason: "ASSIGNMENT_ABORTED" as const,
+          explanation:
+            "Assignment stopped because duplicate task IDs make the overall assignment ambiguous.",
+        };
+      }),
       complete: false,
     };
   }
