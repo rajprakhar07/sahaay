@@ -183,3 +183,12 @@ export const HouseholdPlanSchema = z
   });
 
 export type HouseholdPlan = z.infer<typeof HouseholdPlanSchema>;
+export { createPlan } from "./planner.js";
+export type { PlanResult, PlanningIssue } from "./planner.js";
+
+export { recoverPlan } from "./recovery.js";
+export type {
+  Disruption,
+  RecoveryChange,
+  RecoveryResult,
+} from "./recovery.js";
