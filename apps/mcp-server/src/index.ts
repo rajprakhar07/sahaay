@@ -17,6 +17,7 @@ const household = HouseholdPlanSchema.parse({
       required: true,
       estimatedMinutes: 10,
       requiredSkills: ["communication"],
+      locationId: "home",
     },
     {
       id: "T02",
@@ -24,6 +25,7 @@ const household = HouseholdPlanSchema.parse({
       priority: "high",
       required: true,
       estimatedMinutes: 20,
+      locationId: "home",
       resourceNeeds: [{ resourceId: "water", quantity: 1 }],
     },
   ],

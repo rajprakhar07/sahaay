@@ -242,6 +242,81 @@ console.log("PASS: invalid input leaves scenario risks unchanged");
 
   console.log("PASS: reset clears scenario risks");
 
+  const locationReset = await client.callTool({
+    name: "reset_scenario",
+  });
+
+  if (locationReset.isError) {
+    throw new Error("Could not reset before location-disruption test.");
+  }
+
+  const locationDisruption = await client.callTool({
+    name: "simulate_disruption",
+    arguments: {
+      type: "location_inaccessible",
+      targetId: "home",
+    },
+  });
+
+  if (locationDisruption.isError) {
+    throw new Error(
+      `Location disruption failed: ${JSON.stringify(locationDisruption.content)}`,
+    );
+  }
+
+  const locationPlanResult = await client.callTool({
+    name: "get_current_plan",
+  });
+
+  if (locationPlanResult.isError) {
+    throw new Error("Could not retrieve the plan after location disruption.");
+  }
+
+  const locationPlanText = locationPlanResult.content
+    .filter((item) => item.type === "text")
+    .map((item) => item.text)
+    .join("\n");
+
+  const locationPlan = JSON.parse(locationPlanText) as {
+    complete: boolean;
+    recovered: boolean;
+    unresolvedRisks: unknown[];
+    currentPlan: {
+      tasks?: Array<{
+        taskId?: string;
+        id?: string;
+        status?: string;
+        reason?: string;
+        issues?: Array<{ message?: string; reason?: string }>;
+      }>;
+    };
+  };
+
+  if (locationPlan.complete || locationPlan.recovered) {
+    throw new Error(
+      `Expected location disruption to prevent full recovery: ${locationPlanText}`,
+    );
+  }
+
+  if (locationPlan.unresolvedRisks.length === 0) {
+    throw new Error(
+      `Expected unresolved risks after location disruption: ${locationPlanText}`,
+    );
+  }
+
+  console.log("PASS: inaccessible demo location prevents full recovery");
+
+  const finalReset = await client.callTool({
+    name: "reset_scenario",
+  });
+
+  if (finalReset.isError) {
+    throw new Error("Final scenario reset failed.");
+  }
+
+  console.log("PASS: location test scenario reset");
+
+
   console.log("SUCCESS: MCP HTTP connection and all seven tools verified.");
 } finally {
   await client.close();
