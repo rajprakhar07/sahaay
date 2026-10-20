@@ -161,6 +161,7 @@ try {
     );
   }
 
+
   console.log("PASS: impossible recovery reported honestly");
 
 
@@ -302,6 +303,21 @@ console.log("PASS: invalid input leaves scenario risks unchanged");
     throw new Error(
       `Expected unresolved risks after location disruption: ${locationPlanText}`,
     );
+  }
+
+  const locationRisks = locationPlan.unresolvedRisks as Array<{
+    taskId: string;
+    reason: string;
+  }>;
+
+  for (const taskId of ["T01", "T02"]) {
+    const issue = locationRisks.find((risk) => risk.taskId === taskId);
+
+    if (!issue || !issue.reason.toLowerCase().includes("location")) {
+      throw new Error(
+        `Expected ${taskId} to remain unresolved because its location is inaccessible: ${locationPlanText}`,
+      );
+    }
   }
 
   console.log("PASS: inaccessible demo location prevents full recovery");
