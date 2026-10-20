@@ -23,6 +23,10 @@ try {
 
   await client.connect(transport);
   console.log("Negotiated MCP protocol era:", client.getProtocolEra());
+  console.log(
+  "Negotiated MCP protocol version:",
+  client.getNegotiatedProtocolVersion(),
+);
 
 
   const { tools } = await client.listTools();
