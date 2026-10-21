@@ -3,7 +3,7 @@ import { z } from "zod";
 import { HouseholdPlanSchema, recoverPlan } from "@sahaay/engine";
 
 
-const household = HouseholdPlanSchema.parse({
+const baselineHousehold = HouseholdPlanSchema.parse({
   id: "demo-household",
   people: [
     { id: "alex", name: "Alex", skills: ["first-aid"], available: true },
@@ -43,13 +43,52 @@ type Disruption =
   | { type: "location_inaccessible"; locationId: string };
 
 // Shared scenario state; each HTTP request gets a fresh MCP server instance.
+// Shared state persists across MCP server instances in this process.
 let disruptions: Disruption[] = [];
+let household = structuredClone(baselineHousehold);
 
 function createServer() {
   const server = new McpServer({
     name: "sahaay-mcp-server",
     version: "0.1.0",
   });
+    server.registerTool(
+    "update_household_state",
+    {
+      description:
+        "Validate and save an edited fictional household model.",
+      inputSchema: z.object({
+        household: HouseholdPlanSchema,
+      }),
+    },
+    async ({ household: proposedHousehold }) => {
+      // Validate the candidate before modifying shared state.
+      const candidate = HouseholdPlanSchema.parse(proposedHousehold);
+
+      // Existing disruptions must still refer to valid entities.
+      // If recovery validation fails, the current state is preserved.
+      recoverPlan(candidate, disruptions);
+
+      household = candidate;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                saved: true,
+                household,
+                activeDisruptions: disruptions,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
 
   server.registerTool(
     "get_household_state",
@@ -78,6 +117,7 @@ function createServer() {
           type: "text",
           text: JSON.stringify({
             status,
+            disruptions,
             baselinePlan: result.originalPlan,
             currentPlan: result.recoveryPlan,
             complete: result.complete,
@@ -102,7 +142,9 @@ function createServer() {
         targetId: z.string().min(1),
       }),
     },
+    
     async ({ type, targetId }) => {
+      
       const disruption: Disruption =
         type === "person_unavailable"
           ? { type, personId: targetId }
@@ -172,6 +214,34 @@ function createServer() {
           type: "text",
           text: JSON.stringify(result.unresolvedRisks, null, 2),
         }],
+      };
+    },
+  );
+    server.registerTool(
+    "reset_household_state",
+    {
+      description:
+        "Restore the original fictional household model and clear simulated disruptions.",
+    },
+    async () => {
+      household = structuredClone(baselineHousehold);
+      disruptions = [];
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                reset: true,
+                household,
+                disruptions,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     },
   );

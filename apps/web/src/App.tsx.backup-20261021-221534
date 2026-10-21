@@ -1,0 +1,870 @@
+import { useCallback, useEffect, useState } from "react";
+
+type DisruptionType =
+  | "person_unavailable"
+  | "resource_unavailable"
+  | "location_inaccessible";
+
+type Data = Record<string, any>;
+type View =
+  | "overview"
+  | "chaos"
+  | "household"
+  | "agent"
+  | "history"
+  | "offline";
+  const validViews: View[] = [
+  "overview",
+  "chaos",
+  "household",
+  "agent",
+  "history",
+  "offline"
+];
+
+function readViewFromHash(): View {
+  const value = window.location.hash.replace(/^#\/?/, "");
+
+  return validViews.includes(value as View)
+    ? (value as View)
+    : "chaos";
+}
+
+const disruptionLabels: Record<DisruptionType, string> = {
+  person_unavailable: "Helper becomes unavailable",
+  resource_unavailable: "Resource becomes unavailable",
+  location_inaccessible: "Location becomes inaccessible"
+};
+
+async function api(path: string, body?: unknown): Promise<any> {
+  const response = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined
+      ? undefined
+      : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.error ?? `Request failed: ${response.status}`);
+  }
+
+  return result.data;
+}
+
+function list(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+export default function App() {
+  const [activeView, setActiveView] = useState<View>(readViewFromHash);
+
+useEffect(() => {
+  window.location.hash = `/${activeView}`;
+}, [activeView]);
+  
+  const [household, setHousehold] = useState<Data | null>(null);
+  const [plan, setPlan] = useState<Data | null>(null);
+  const [validation, setValidation] = useState<Data | null>(null);
+  const [risks, setRisks] = useState<any[]>([]);
+  const [type, setType] = useState<DisruptionType>("person_unavailable");
+  const [targetId, setTargetId] = useState("sam");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [activity, setActivity] = useState<string[]>([]);
+
+  const people = list(household?.people);
+  const resources = list(household?.resources);
+  const locations = list(household?.locations);
+
+  const targets = type === "person_unavailable"
+    ? people.map(person => ({ id: person.id, name: person.name }))
+    : type === "resource_unavailable"
+      ? resources.map(resource => ({ id: resource.id, name: resource.name }))
+      : locations.map(location => ({ id: location.id, name: location.name }));
+
+  const record = (message: string) => {
+    setActivity(previous => [
+      `${new Date().toLocaleTimeString()} — ${message}`,
+      ...previous
+    ].slice(0, 12));
+  };
+
+  const refresh = useCallback(async () => {
+    const [h, p, v, r] = await Promise.all([
+      api("/api/household"),
+      api("/api/plan"),
+      api("/api/validate"),
+      api("/api/risks")
+    ]);
+
+    setHousehold(h);
+    setPlan(p);
+    setValidation(v);
+    setRisks(list(r));
+  }, []);
+
+  useEffect(() => {
+    refresh()
+      .then(() => record("Connected to household and planning tools"))
+      .catch(e => setError(e.message));
+  }, [refresh]);
+
+  useEffect(() => {
+    if (targets.length && !targets.some(item => item.id === targetId)) {
+      setTargetId(targets[0].id);
+    }
+  }, [type, household]);
+
+  async function runAction(label: string, action: () => Promise<any>) {
+    setBusy(true);
+    setError("");
+    record(`Calling ${label}`);
+
+    try {
+      const result = await action();
+      record(`${label} completed`);
+      return result;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unexpected error";
+      setError(message);
+      record(`${label} failed`);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function injectDisruption() {
+    const result = await runAction("simulate_disruption", () =>
+      api("/api/disrupt", { type, targetId })
+    );
+
+    if (!result) return;
+
+    const rebuilt = await runAction("rebuild_response_plan", () =>
+      api("/api/rebuild")
+    );
+
+    if (!rebuilt) return;
+
+    const checked = await runAction("validate_plan", () =>
+      api("/api/validate")
+    );
+
+    if (!checked) return;
+
+    await runAction("refresh scenario", refresh);
+  }
+
+  async function resetScenario() {
+    const result = await runAction("reset_scenario", () => api("/api/reset"));
+    if (result) await runAction("refresh baseline", refresh);
+  }
+
+  const status = plan?.status ?? "loading";
+  const validationViolations = list(
+    validation?.violations ?? validation?.validation?.violations
+  );
+  const validationFailed =
+    validation?.valid === false ||
+    validation?.validation?.valid === false ||
+    /invalid|fail/i.test(String(validation?.status ?? ""));
+  const validationPassed =
+    validation?.valid === true ||
+    validation?.validation?.valid === true ||
+    (/valid|pass/i.test(String(validation?.status ?? "")) &&
+      !validationFailed);
+
+  const recoveryFailed =
+    status.toLowerCase() === "failed" ||
+    status.toLowerCase() === "infeasible" ||
+    current?.feasible === false;
+
+  const partialPlan =
+    !recoveryFailed &&
+    (status.toLowerCase() === "partial" ||
+      unassignedTasks.length > 0 ||
+      risks.length > 0 ||
+      validationFailed);
+
+  const outcomeTitle =
+    recoveryFailed ? "RECOVERY FAILED" :
+    partialPlan ? "PARTIAL PLAN" :
+    activeDisruptions.length > 0 &&
+      plan?.recovered === true &&
+      plan?.complete === true &&
+      current?.feasible !== false &&
+      validationPassed &&
+      unassignedTasks.length === 0 &&
+      risks.length === 0
+      ? "PLAN RECOVERED" :
+    status === "loading" ? "LOADING SCENARIO" :
+    "BASELINE PLAN";
+
+  const outcomeTone =
+    recoveryFailed ? "failed" :
+    partialPlan ? "partial" :
+    outcomeTitle === "PLAN RECOVERED" ||
+      outcomeTitle === "BASELINE PLAN"
+      ? "ready" : "pending";
+
+  const outcomeDescription =
+    recoveryFailed
+      ? "The current plan is infeasible. Human review is required; no successful recovery is claimed."
+      : partialPlan
+        ? "Some tasks, constraints, or risks remain unresolved. Review the details before relying on this plan."
+        : outcomeTitle === "PLAN RECOVERED"
+          ? "The planner reports a complete plan that passed the available validation checks for this simulated scenario."
+          : outcomeTitle === "BASELINE PLAN"
+            ? "Review the baseline against the recorded household assumptions. Validation does not prove real-world safety."
+            : "Waiting for the current household state and planning results.";
+
+  const outcomeFacts = [
+    { label: "ACTIVE DISRUPTIONS", value: activeDisruptions.length },
+    { label: "ASSIGNED TASKS", value: tasks.length },
+    { label: "UNRESOLVED TASKS", value: unassignedTasks.length },
+    { label: "REPORTED RISKS", value: risks.length }
+  ];
+
+  const baseline = plan?.baselinePlan ?? plan?.originalPlan;
+  const current = plan?.currentPlan ?? plan?.recoveryPlan;
+  const tasks = list(
+    current?.assignedTasks ??
+    current?.tasks ??
+    current?.assignments ??
+    current?.scheduledTasks
+  );
+  const unassignedTasks = list(current?.unassignedTasks);
+const activeDisruptions = list(plan?.disruptions);
+
+const baselineTasks = list(
+  baseline?.assignedTasks ??
+  baseline?.tasks ??
+  baseline?.assignments ??
+  baseline?.scheduledTasks
+);
+
+function assignee(task: Data | undefined): string {
+  if (!task) return "Not assigned";
+
+  const id =
+    task.assignedPersonId ??
+    task.assigneeName ??
+    task.personName ??
+    task.assignedTo ??
+    task.personId;
+
+  if (!id) return "Not assigned";
+
+  const person = people.find(
+    (item) => item.id === id || item.name === id
+  );
+
+  return person?.name ?? String(id);
+}
+
+const taskChanges = baselineTasks.map((original: Data) => {
+  const revised = tasks.find(
+    (task: Data) => task.id === original.id
+  );
+
+  const before = assignee(original);
+  const after = assignee(revised);
+
+  const changed = !revised || before !== after;
+
+  return {
+    id: original.id,
+    title: original.title ?? original.description ?? original.id,
+    before,
+    after,
+    changed,
+    missing: !revised
+  };
+});
+
+const newTasks = tasks.filter(
+  (task: Data) =>
+    !baselineTasks.some((original: Data) => original.id === task.id)
+);
+
+
+function describeDisruption(disruption: Data): string {
+  if (disruption.type === "person_unavailable") {
+    const person = people.find(
+      (item) => item.id === disruption.personId
+    );
+    return `${person?.name ?? disruption.personId} is unavailable`;
+  }
+
+  if (disruption.type === "resource_unavailable") {
+    const resource = resources.find(
+      (item) => item.id === disruption.resourceId
+    );
+    return `${resource?.name ?? disruption.resourceId} is unavailable`;
+  }
+
+  if (disruption.type === "location_inaccessible") {
+    const location = locations.find(
+      (item) => item.id === disruption.locationId
+    );
+    return `${location?.name ?? disruption.locationId} is inaccessible`;
+  }
+
+  return "Unknown disruption";
+}
+
+ 
+  return (
+    <div className="app-shell">
+    <header className="topbar">
+  <div className="brand-mark">S</div>
+  <div className="brand-name">
+    SAHAAY <span>THE BACKUP BRAIN</span>
+  </div>
+  <div className="sim-badge">● SIMULATED SCENARIO</div>
+</header>
+
+      
+      
+      <div className="workspace-layout">
+  <aside className="sidebar" aria-label="Main navigation">
+    <div className="sidebar-label">WORKSPACE</div>
+
+    {([
+      ["overview", "Overview", "01"],
+      ["chaos", "Chaos Lab", "02"],
+      ["household", "Household Model", "03"],
+      ["agent", "Agent Console", "04"],
+      ["history", "Evidence & History", "05"],
+      ["offline", "Offline Plan", "06"],
+    ] as [View, string, string][]).map(([view, label, number]) => (
+      <button
+        key={view}
+        type="button"
+        className={`nav-item ${activeView === view ? "active" : ""}`}
+        aria-current={activeView === view ? "page" : undefined}
+        onClick={() => setActiveView(view)}
+      >
+        <span>{number}</span>
+        {label}
+      </button>
+    ))}
+
+    <div className="sidebar-note">
+      <span className="status-dot" />
+      <strong>DEMO MODE</strong>
+      <small>Fictional household · Simulated disruptions</small>
+    </div>
+  </aside>
+
+  <div className="view-container">
+
+      {activeView === "chaos" && (
+  <main>
+    <section className="hero">
+          <div>
+            <div className="eyebrow">CHAOS LAB / 01</div>
+            <h1>Break the plan.<br /><em>Watch it rebuild.</em></h1>
+            <p>
+              Inject a disruption into a fictional household. Sahaay calls
+              its planning tools, checks the revised plan, and exposes
+              anything it cannot resolve.
+            </p>
+          </div>
+          <div className="engine-stamp">
+            <span>LIVE</span>
+            <strong>SCENARIO<br />ENGINE</strong>
+            <small>DETERMINISTIC PLANNER</small>
+          </div>
+        </section>
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <strong>Action failed</strong>
+            <span>{error}</span>
+            <button onClick={() => {
+              setError("");
+              void refresh().catch(e => setError(e.message));
+            }}>Retry</button>
+          </div>
+        )}
+
+        <section className="summary-grid">
+          <article className="summary-card">
+            <span className="card-label">SCENARIO STATUS</span>
+            <strong className={`status status-${status}`}>{status.toUpperCase()}</strong>
+            <p>{plan?.complete
+              ? "All mandatory tasks are planned"
+              : plan?.recovered
+                ? "Recovery reported with limitations"
+                : "Review the current plan and risks"}</p>
+          </article>
+          <article className="summary-card">
+            <span className="card-label">UNRESOLVED RISKS</span>
+            <strong>{risks.length}</strong>
+            <p>Reported by the planning engine</p>
+          </article>
+          <article className="summary-card">
+            <span className="card-label">HOUSEHOLD MODEL</span>
+            <strong>{people.length} PEOPLE</strong>
+            <p>{resources.length} resources · {locations.length} locations</p>
+          </article>
+        </section>
+
+        <section className={`outcome-panel outcome-${outcomeTone}`} aria-live="polite">
+          <div className="outcome-main">
+            <div className="outcome-heading">
+              <span className="outcome-indicator" aria-hidden="true" />
+              <span className="eyebrow">CURRENT SCENARIO / DECISION SUMMARY</span>
+            </div>
+            <h2>{outcomeTitle}</h2>
+            <p>{outcomeDescription}</p>
+            <div className="outcome-validation">
+              <span>VALIDATION</span>
+              <strong>
+                {validationPassed
+                  ? "CHECKS PASSED"
+                  : validationFailed
+                    ? "CHECKS FAILED"
+                    : "RESULT NOT CONFIRMED"}
+              </strong>
+              {validationViolations.length > 0 && (
+                <span>{validationViolations.length} reported violation(s)</span>
+              )}
+            </div>
+          </div>
+          <div className="outcome-facts">
+            {outcomeFacts.map((fact) => (
+              <div className="outcome-fact" key={fact.label}>
+                <span>{fact.label}</span>
+                <strong>{fact.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="main-grid">
+          <article className="panel">
+            <div className="eyebrow">01 / INJECT A FAILURE</div>
+            <h2>Change an assumption</h2>
+            <p className="muted">
+              Each disruption changes the server-side scenario state.
+              You can apply another disruption after recovery.
+            </p>
+
+            <label htmlFor="disruption">DISRUPTION TYPE</label>
+            <select
+              id="disruption"
+              value={type}
+              disabled={busy}
+              onChange={e => setType(e.target.value as DisruptionType)}
+            >
+              {Object.entries(disruptionLabels).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+
+            <label htmlFor="target">TARGET</label>
+            <select
+              id="target"
+              value={targetId}
+              disabled={busy || targets.length === 0}
+              onChange={e => setTargetId(e.target.value)}
+            >
+              {targets.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.name} · {item.id}
+                </option>
+              ))}
+            </select>
+
+            <div className="simulation-note">
+              Synthetic event only. This is not a live alert or an
+              instruction for an actual emergency.
+            </div>
+
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={busy || !targetId}
+                onClick={() => void injectDisruption()}
+              >
+                {busy ? "WORKING…" : "INJECT DISRUPTION ↗"}
+              </button>
+              <button disabled={busy} onClick={() => void resetScenario()}>
+                RESET ↺
+              </button>
+            </div>
+            <div className="panel-foot">
+              <span>{busy ? "Executing tools…" : "Ready for another disruption"}</span>
+              <span>STATEFUL DEMO</span>
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="eyebrow">02 / PLAN DNA</div>
+            <h2>Computed response plan</h2>
+            <div className="scenario-state">
+  <strong>ACTIVE SIMULATED DISRUPTIONS</strong>
+
+  {activeDisruptions.length ? (
+    activeDisruptions.map((disruption, index) => (
+      <div className="task-row" key={`${disruption.type}-${index}`}>
+        <code>EVENT {index + 1}</code>
+        <div>
+          <strong>{describeDisruption(disruption)}</strong>
+          <small>Simulated scenario input — not a live alert</small>
+        </div>
+        <span>ACTIVE</span>
+      </div>
+    ))
+  ) : (
+    <p className="muted">No active disruptions. Baseline scenario.</p>
+  )}
+</div>
+
+           
+<div className="comparison">
+  <div>
+    <span>BASELINE ASSIGNED</span>
+    <strong>{baselineTasks.length}</strong>
+  </div>
+  <span className="arrow">→</span>
+  <div>
+    <span>CURRENT ASSIGNED</span>
+    <strong>{tasks.length}</strong>
+  </div>
+</div>
+
+<div className="plan-diff-heading">
+  <div>
+    <div className="eyebrow">PLAN DNA / TASK COMPARISON</div>
+    <h3>What changed?</h3>
+  </div>
+  <span className="diff-count">
+    {taskChanges.filter((task: Data) => task.changed).length}
+    {" "}CHANGED
+  </span>
+</div>
+
+{taskChanges.map((task: Data) => (
+  <div className="diff-row" key={task.id}>
+    <div className="diff-title">
+      <code>{task.id}</code>
+      <strong>{task.title}</strong>
+    </div>
+
+    <div className="diff-assignments">
+      <div>
+        <small>BEFORE</small>
+        <span>{task.before}</span>
+      </div>
+      <span className="diff-arrow">→</span>
+      <div>
+        <small>AFTER</small>
+        <span>{task.after}</span>
+      </div>
+    </div>
+
+    <span className={`diff-status ${task.changed ? "changed" : "unchanged"}`}>
+      {task.missing
+        ? "MISSING"
+        : task.changed
+          ? "CHANGED"
+          : "UNCHANGED"}
+    </span>
+  </div>
+))}
+
+{newTasks.map((task: Data) => (
+  <div className="diff-row" key={task.id}>
+    <div className="diff-title">
+      <code>{task.id}</code>
+      <strong>{task.title ?? task.description ?? "New task"}</strong>
+    </div>
+
+    <div className="diff-assignments">
+      <div>
+        <small>BEFORE</small>
+        <span>Not in baseline</span>
+      </div>
+      <span className="diff-arrow">→</span>
+      <div>
+        <small>AFTER</small>
+        <span>{assignee(task)}</span>
+      </div>
+    </div>
+
+    <span className="diff-status changed">NEW TASK</span>
+  </div>
+))}
+
+{taskChanges.length === 0 && newTasks.length === 0 && (
+  <p className="muted">
+    No assigned tasks are available for comparison yet.
+  </p>
+)}
+
+  <div className="unresolved-tasks">
+    <div className="eyebrow">UNRESOLVED TASKS</div>
+
+    {unassignedTasks.map((task, index) => (
+      <div className="task-row" key={task.taskId ?? index}>
+        <code>{task.taskId ?? `TASK ${index + 1}`}</code>
+        <div>
+          <strong>{task.reason ?? "No feasible assignment found"}</strong>
+          <small>Requires review or human intervention</small>
+        </div>
+        <span>UNRESOLVED</span>
+      </div>
+    ))}
+  </div>
+)
+            <details>
+              <summary>Inspect current plan JSON</summary>
+              <pre>{pretty(plan)}</pre>
+            </details>
+            <details>
+              <summary>Inspect household state JSON</summary>
+              <pre>{pretty(household)}</pre>
+            </details>
+          </article>
+        </section>
+
+        <section className="main-grid lower-grid">
+          <article className="panel">
+            <div className="eyebrow">03 / CONSTRAINT CHECK</div>
+            <h2>Validation & risks</h2>
+            <div className="validation-strip">
+              <strong>{String(validation?.status ?? "awaiting result").toUpperCase()}</strong>
+              <span>{validation?.recovered
+                ? "Recovery reported by planner"
+                : "No successful recovery claim"}</span>
+            </div>
+
+            {risks.length ? risks.map((risk, index) => (
+              <div className="risk-row" key={index}>
+                <b>!</b>
+                <div>
+                  <strong>{typeof risk === "string"
+                    ? risk
+                    : risk.title ?? risk.message ?? risk.description ?? risk.type ?? `Risk ${index + 1}`}</strong>
+                  <small>{typeof risk === "object"
+                    ? risk.reason ?? risk.details ?? "Requires human review"
+                    : "Requires human review"}</small>
+                </div>
+              </div>
+            )) : (
+              <div className="risk-row">
+                <b className="safe">✓</b>
+                <div>
+                  <strong>No unresolved risks reported</strong>
+                  <small>This checks recorded constraints only; it does not prove real-world safety.</small>
+                </div>
+              </div>
+            )}
+
+            <details>
+              <summary>Inspect validation JSON</summary>
+              <pre>{pretty(validation)}</pre>
+            </details>
+          </article>
+
+          <article className="panel">
+            <div className="eyebrow">04 / TOOL AUDIT</div>
+            <h2>Agent activity</h2>
+            <p className="muted">Visible tool-call summaries, not hidden model reasoning.</p>
+            {activity.map((entry, index) => (
+              <div className="activity-row" key={`${entry}-${index}`}>
+                <code>{String(index + 1).padStart(2, "0")}</code>
+                <span>{entry}</span>
+              </div>
+            ))}
+            <div className="tool-list">
+              <code>simulate_disruption</code>
+              <code>rebuild_response_plan</code>
+              <code>validate_plan</code>
+            </div>
+          </article>
+        </section>
+
+        <section className="household-section">
+          <div className="eyebrow">05 / FICTIONAL HOUSEHOLD MODEL</div>
+          <h2>The assumptions underneath</h2>
+          <section className="summary-grid">
+            <article className="summary-card">
+              <span className="card-label">PEOPLE</span>
+              <p>
+  {people.map((person) => {
+    const scenarioUnavailable = activeDisruptions.some(
+      (disruption) =>
+        disruption.type === "person_unavailable" &&
+        disruption.personId === person.id
+    );
+
+    const scenarioAvailable =
+      person.available && !scenarioUnavailable;
+
+    return `${person.name}: baseline ${
+      person.available ? "available" : "unavailable"
+    } · scenario ${
+      scenarioAvailable ? "available" : "unavailable"
+    }`;
+  }).join(" · ") || "Loading…"}
+</p>
+            </article>
+            <article className="summary-card">
+              <span className="card-label">RESOURCES</span>
+              <p>{resources.map(r => `${r.name} (${r.quantity} ${r.unit ?? ""})`).join(" · ") || "Loading…"}</p>
+            </article>
+            <article className="summary-card">
+              <span className="card-label">LOCATIONS</span>
+              <p>{locations.map(l => l.name).join(" · ") || "Loading…"}</p>
+            </article>
+          </section>
+        </section>
+
+        <footer className="disclaimer">
+          <strong>SAHAAY — THE BACKUP BRAIN</strong>
+          <span>Preparedness prototype. Follow official emergency instructions. Software validation cannot certify safety.</span>
+        </footer>
+            </main>
+      )}
+            {activeView === "overview" && (
+        <main>
+          <section className="hero">
+            <div>
+              <div className="eyebrow">OVERVIEW / 01</div>
+              <h1>Your household.<br /><em>One backup plan.</em></h1>
+              <p>
+                Inspect your fictional household, understand unresolved
+                issues, and test what happens when the original plan breaks.
+              </p>
+            </div>
+
+            <div className="engine-stamp">
+              <span>DEMO</span>
+              <strong>PLAN<br />STATUS</strong>
+              <small>SIMULATED DATA</small>
+            </div>
+          </section>
+
+          {error && (
+            <div className="error-banner" role="alert">
+              <strong>Action failed</strong>
+              <span>{error}</span>
+              <button onClick={() => {
+                setError("");
+                void refresh().catch(e => setError(e.message));
+              }}>
+                Retry
+              </button>
+            </div>
+          )}
+
+          <section className="summary-grid">
+            <article className="summary-card">
+              <span className="eyebrow">CURRENT SCENARIO</span>
+              <h2>{status}</h2>
+              <p>Result from the current simulated conditions.</p>
+            </article>
+
+            <article className="summary-card">
+              <span className="eyebrow">UNRESOLVED RISKS</span>
+              <h2>{risks.length}</h2>
+              <p>Issues the planner has not resolved.</p>
+            </article>
+
+            <article className="summary-card">
+              <span className="eyebrow">HOUSEHOLD MODEL</span>
+              <h2>{people.length} people</h2>
+              <p>
+                {resources.length} resources · {locations.length} locations
+              </p>
+            </article>
+          </section>
+
+          <section className="panel">
+            <div className="eyebrow">NEXT ACTION</div>
+            <h2>Break the plan. See what survives.</h2>
+            <p>
+              Make a helper unavailable, remove a resource, or block a
+              location. Sahaay will recalculate and validate the response.
+            </p>
+            <button
+              className="primary-button"
+              onClick={() => setActiveView("chaos")}
+            >
+              OPEN CHAOS LAB ↗
+            </button>
+          </section>
+
+          <footer className="disclaimer">
+            Sahaay is a preparedness prototype using fictional, simulated
+            scenarios. Software validation does not guarantee real-world safety.
+            Follow official emergency instructions.
+          </footer>
+        </main>
+      )}
+
+      {(["household", "agent", "history", "offline"] as View[]).includes(activeView) && (
+        <main>
+          <section className="hero">
+            <div>
+              <div className="eyebrow">WORKSPACE / IN DEVELOPMENT</div>
+              <h1>
+                {activeView === "household"
+                  ? "Household model."
+                  : activeView === "agent"
+                    ? "Agent console."
+                    : activeView === "history"
+                      ? "Evidence & history."
+                      : "Offline plan."}
+                <br />
+                <em>Built in phases.</em>
+              </h1>
+              <p>
+                This view is being developed incrementally. The Chaos Lab
+                remains available for testing the working planning engine.
+              </p>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>
+              {activeView === "household"
+                ? "Household Model"
+                : activeView === "agent"
+                  ? "Agent Console"
+                  : activeView === "history"
+                    ? "Evidence & History"
+                    : "Offline Plan"}
+            </h2>
+            <p>
+              This view is not yet implemented. No functionality is claimed
+              until it is connected and tested.
+            </p>
+            <button
+              className="primary-button"
+              onClick={() => setActiveView("chaos")}
+            >
+              RETURN TO CHAOS LAB ↗
+            </button>
+          </section>
+        </main>
+      )}
+        </div>
+      </div>
+     </div>
+   
+  );
+}
+
