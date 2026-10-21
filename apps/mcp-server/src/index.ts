@@ -8,6 +8,10 @@ const baselineHousehold = HouseholdPlanSchema.parse({
   people: [
     { id: "alex", name: "Alex", skills: ["first-aid"], available: true },
     { id: "sam", name: "Sam", skills: ["communication"], available: true },
+    // Backup with an overlapping skill so recovery can demonstrate a real
+    // reassignment. "taylor" sorts after "sam", so the baseline plan still
+    // assigns T01 to Sam; Taylor is used only when Sam is unavailable.
+    { id: "taylor", name: "Taylor", skills: ["communication"], available: true },
   ],
   tasks: [
     {
@@ -41,6 +45,16 @@ type Disruption =
   | { type: "person_unavailable"; personId: string }
   | { type: "resource_unavailable"; resourceId: string }
   | { type: "location_inaccessible"; locationId: string };
+
+/**
+ * Pre-existing three-way status, kept as `legacyStatus` for compatibility.
+ * Note its semantics differ from the engine's `recoveryStatus`: "partial"
+ * here means every required task is done but an optional one is not, and any
+ * unresolved required task is reported as "failed".
+ */
+function legacyStatus(result: { complete: boolean; recovered: boolean }) {
+  return result.complete ? "complete" : result.recovered ? "partial" : "failed";
+}
 
 // Shared scenario state; each HTTP request gets a fresh MCP server instance.
 // Shared state persists across MCP server instances in this process.
@@ -106,23 +120,22 @@ function createServer() {
     },
     async () => {
       const result = recoverPlan(household, disruptions);
-      const status = result.complete
-        ? "complete"
-        : result.recovered
-          ? "partial"
-          : "failed";
 
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            status,
+            status: result.recoveryStatus,
+            recoveryStatus: result.recoveryStatus,
+            legacyStatus: legacyStatus(result),
             disruptions,
             baselinePlan: result.originalPlan,
             currentPlan: result.recoveryPlan,
             complete: result.complete,
             recovered: result.recovered,
             unresolvedRisks: result.unresolvedRisks,
+            taskOutcomes: result.taskOutcomes,
+            summary: result.summary,
           }, null, 2),
         }],
       };
@@ -184,21 +197,19 @@ function createServer() {
     },
     async () => {
       const result = recoverPlan(household, disruptions);
-      const status = result.complete
-        ? "complete"
-        : result.recovered
-          ? "partial"
-          : "failed";
 
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            status,
+            status: result.recoveryStatus,
+            recoveryStatus: result.recoveryStatus,
+            legacyStatus: legacyStatus(result),
             scheduledTasksValidation: result.recoveryPlan.validation,
             complete: result.complete,
             recovered: result.recovered,
             unresolvedRisks: result.unresolvedRisks,
+            summary: result.summary,
           }, null, 2),
         }],
       };

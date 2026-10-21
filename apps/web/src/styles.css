@@ -27,6 +27,7 @@ h1 em{font-style:normal;color:var(--mint)}
 .summary-card>strong{display:block;font:700 25px Manrope;margin:12px 0 6px;overflow-wrap:anywhere}
 .summary-card p{font-size:11px;color:var(--muted);line-height:1.7;margin:8px 0 0}
 .status-complete,.safe{color:var(--mint)!important}.status-partial{color:#f0a66e!important}.status-failed{color:#ff837a!important}
+.status-fully_recovered{color:var(--mint)!important}.status-partially_recovered{color:#f0a66e!important}.status-recovery_failed{color:#ff837a!important}
 .main-grid{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(0,1.25fr);gap:14px}
 .panel h2,.household-section h2{font:700 22px Manrope;letter-spacing:-.04em;margin:9px 0 14px}
 .panel>p{margin-bottom:22px}

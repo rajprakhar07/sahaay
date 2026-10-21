@@ -1,6 +1,14 @@
 
 import type { HouseholdPlan, Person, Resource, Task } from "./index";
 import { createPlan, type PlanResult, type PlanningIssue } from "./planner";
+import {
+  buildTaskOutcomes,
+  deriveRecoveryStatus,
+  summarizeOutcomes,
+  type OutcomeSummary,
+  type RecoveryStatus,
+  type TaskOutcome,
+} from "./outcomes";
 
 export type Disruption =
   | { type: "person_unavailable"; personId: string }
@@ -28,6 +36,17 @@ export interface RecoveryResult {
   recoveryPlan: PlanResult;
   changes: RecoveryChange[];
   unresolvedRisks: PlanningIssue[];
+  /**
+   * Explicit, engine-derived recovery status. See `RecoveryStatus`.
+   * Relationship to the legacy flags: `recovered === true` exactly when
+   * `recoveryStatus === "fully_recovered"`. `complete` is stricter: it also
+   * requires every OPTIONAL task to be scheduled.
+   */
+  recoveryStatus: RecoveryStatus;
+  /** One outcome per household task, in household task order. */
+  taskOutcomes: TaskOutcome[];
+  /** Required vs optional counts; optional gaps are reported separately. */
+  summary: OutcomeSummary;
 }
 
 function assertKnownTarget(
@@ -289,6 +308,20 @@ const hasDuplicateTaskIds = new Set(taskIds).size !== taskIds.length;
     }
   }
 
+  const taskOutcomes = buildTaskOutcomes({
+    household,
+    scenarioPeople,
+    scenarioResources,
+    unavailablePersonIds,
+    unavailableResourceIds,
+    inaccessibleLocationIds,
+    plannableTasks: plannableTasks as Task[],
+    originalPlan,
+    recoveredPlan: plannedRecovery,
+  });
+  const summary = summarizeOutcomes(taskOutcomes);
+  const recoveryStatus = deriveRecoveryStatus(summary);
+
   return {
     complete,
     recovered,
@@ -302,5 +335,8 @@ const hasDuplicateTaskIds = new Set(taskIds).size !== taskIds.length;
     recoveryPlan,
     changes,
     unresolvedRisks,
+    recoveryStatus,
+    taskOutcomes,
+    summary,
   };
 }

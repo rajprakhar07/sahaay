@@ -176,6 +176,11 @@ const [saveMessage, setSaveMessage] = useState("");
   }
 
   const status = plan?.status ?? "loading";
+  const statusLabel = String(status).replace(/_/g, " ");
+  // Engine-defined recovery status; the heuristics below are only a fallback
+  // for responses from an older backend that does not send it.
+  const engineStatus: string | undefined =
+    typeof plan?.recoveryStatus === "string" ? plan.recoveryStatus : undefined;
 
 
   const baseline = plan?.baselinePlan ?? plan?.originalPlan;
@@ -192,31 +197,45 @@ const activeDisruptions = list(plan?.disruptions);
   const validationViolations = list(
     validation?.violations ?? validation?.validation?.violations
   );
+  const scheduleValid: boolean | undefined =
+    typeof validation?.scheduledTasksValidation?.valid === "boolean"
+      ? validation.scheduledTasksValidation.valid
+      : undefined;
   const validationFailed =
-    validation?.valid === false ||
-    validation?.validation?.valid === false ||
-    /invalid|fail/i.test(String(validation?.status ?? ""));
+    scheduleValid === false ||
+    (scheduleValid === undefined &&
+      (validation?.valid === false ||
+        validation?.validation?.valid === false ||
+        /invalid|fail/i.test(String(validation?.status ?? ""))));
   const validationPassed =
-    validation?.valid === true ||
-    validation?.validation?.valid === true ||
-    (/valid|pass/i.test(String(validation?.status ?? "")) &&
-      !validationFailed);
+    scheduleValid === true ||
+    (scheduleValid === undefined &&
+      (validation?.valid === true ||
+        validation?.validation?.valid === true ||
+        (/valid|pass/i.test(String(validation?.status ?? "")) &&
+          !validationFailed)));
 
   const recoveryFailed =
-    status.toLowerCase() === "failed" ||
-    status.toLowerCase() === "infeasible" ||
-    current?.feasible === false;
+    engineStatus !== undefined
+      ? engineStatus === "recovery_failed"
+      : status.toLowerCase() === "failed" ||
+        status.toLowerCase() === "infeasible" ||
+        current?.feasible === false;
 
   const partialPlan =
-    !recoveryFailed &&
-    (status.toLowerCase() === "partial" ||
-      unassignedTasks.length > 0 ||
-      risks.length > 0 ||
-      validationFailed);
+    engineStatus !== undefined
+      ? engineStatus === "partially_recovered"
+      : !recoveryFailed &&
+        (status.toLowerCase() === "partial" ||
+          unassignedTasks.length > 0 ||
+          risks.length > 0 ||
+          validationFailed);
 
   const outcomeTitle =
     recoveryFailed ? "RECOVERY FAILED" :
     partialPlan ? "PARTIAL PLAN" :
+    engineStatus === "fully_recovered"
+      ? (activeDisruptions.length > 0 ? "PLAN RECOVERED" : "BASELINE PLAN") :
     activeDisruptions.length > 0 &&
       plan?.recovered === true &&
       plan?.complete === true &&
@@ -240,6 +259,9 @@ const activeDisruptions = list(plan?.disruptions);
       ? "The current plan is infeasible. Human review is required; no successful recovery is claimed."
       : partialPlan
         ? "Some tasks, constraints, or risks remain unresolved. Review the details before relying on this plan."
+        : outcomeTitle === "PLAN RECOVERED" &&
+            Number(plan?.summary?.optionalUnresolved ?? 0) > 0
+          ? `All required tasks are planned. ${Number(plan?.summary?.optionalUnresolved ?? 0)} optional task(s) remain unresolved.`
         : outcomeTitle === "PLAN RECOVERED"
           ? "The planner reports a complete plan that passed the available validation checks for this simulated scenario."
           : outcomeTitle === "BASELINE PLAN"
@@ -476,7 +498,7 @@ async function saveHouseholdModel() {
         <section className="summary-grid">
           <article className="summary-card">
             <span className="card-label">SCENARIO STATUS</span>
-            <strong className={`status status-${status}`}>{status.toUpperCase()}</strong>
+            <strong className={`status status-${status}`}>{statusLabel.toUpperCase()}</strong>
             <p>{plan?.complete
               ? "All mandatory tasks are planned"
               : plan?.recovered
@@ -720,7 +742,7 @@ async function saveHouseholdModel() {
             <div className="eyebrow">03 / CONSTRAINT CHECK</div>
             <h2>Validation & risks</h2>
             <div className="validation-strip">
-              <strong>{String(validation?.status ?? "awaiting result").toUpperCase()}</strong>
+              <strong>{String(validation?.status ?? "awaiting result").replace(/_/g, " ").toUpperCase()}</strong>
               <span>{validation?.recovered
                 ? "Recovery reported by planner"
                 : "No successful recovery claim"}</span>
@@ -849,7 +871,7 @@ async function saveHouseholdModel() {
           <section className="summary-grid">
             <article className="summary-card">
               <span className="eyebrow">CURRENT SCENARIO</span>
-              <h2>{status}</h2>
+              <h2>{statusLabel}</h2>
               <p>Result from the current simulated conditions.</p>
             </article>
 
@@ -1136,7 +1158,7 @@ async function saveHouseholdModel() {
         <section className="panel">
           <div className="eyebrow">LIVE ENGINE</div>
           <h2>Current planning result</h2>
-          <p>Status: <strong>{status}</strong></p>
+          <p>Status: <strong>{statusLabel}</strong></p>
           <p>Unresolved risks: <strong>{risks.length}</strong></p>
           <button
             onClick={() => setActiveView("chaos")}

@@ -192,3 +192,12 @@ export type {
   RecoveryChange,
   RecoveryResult,
 } from "./recovery.js";
+
+export type {
+  OutcomeSummary,
+  RecoveryStatus,
+  TaskBlocker,
+  TaskOutcome,
+  TaskOutcomeStatus,
+  TaskReasonCode,
+} from "./outcomes.js";
