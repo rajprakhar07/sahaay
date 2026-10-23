@@ -10,7 +10,8 @@
     "moduleDetection": "force",
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true
+    "strict": true,
+    "resolveJsonModule": true
   },
   "include": ["src"]
 }

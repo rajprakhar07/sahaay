@@ -1,0 +1,153 @@
+{
+  "status": "fully_recovered",
+  "recoveryStatus": "fully_recovered",
+  "legacyStatus": "complete",
+  "disruptions": [],
+  "baselinePlan": {
+    "complete": true,
+    "feasible": true,
+    "assignedTasks": [
+      {
+        "id": "T01",
+        "title": "Check household members",
+        "description": "",
+        "priority": "critical",
+        "required": true,
+        "estimatedMinutes": 10,
+        "requiredSkills": [
+          "communication"
+        ],
+        "resourceNeeds": [],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "sam"
+      },
+      {
+        "id": "T02",
+        "title": "Prepare emergency supplies",
+        "description": "",
+        "priority": "high",
+        "required": true,
+        "estimatedMinutes": 20,
+        "requiredSkills": [],
+        "resourceNeeds": [
+          {
+            "resourceId": "water",
+            "quantity": 1
+          }
+        ],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "alex"
+      }
+    ],
+    "unassignedTasks": [],
+    "schedule": [
+      {
+        "taskId": "T01",
+        "startMinute": 0,
+        "endMinute": 10
+      },
+      {
+        "taskId": "T02",
+        "startMinute": 0,
+        "endMinute": 20
+      }
+    ],
+    "schedulingErrors": [],
+    "validation": {
+      "valid": true,
+      "violations": []
+    }
+  },
+  "currentPlan": {
+    "complete": true,
+    "feasible": true,
+    "assignedTasks": [
+      {
+        "id": "T01",
+        "title": "Check household members",
+        "description": "",
+        "priority": "critical",
+        "required": true,
+        "estimatedMinutes": 10,
+        "requiredSkills": [
+          "communication"
+        ],
+        "resourceNeeds": [],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "sam"
+      },
+      {
+        "id": "T02",
+        "title": "Prepare emergency supplies",
+        "description": "",
+        "priority": "high",
+        "required": true,
+        "estimatedMinutes": 20,
+        "requiredSkills": [],
+        "resourceNeeds": [
+          {
+            "resourceId": "water",
+            "quantity": 1
+          }
+        ],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "alex"
+      }
+    ],
+    "unassignedTasks": [],
+    "schedule": [
+      {
+        "taskId": "T01",
+        "startMinute": 0,
+        "endMinute": 10
+      },
+      {
+        "taskId": "T02",
+        "startMinute": 0,
+        "endMinute": 20
+      }
+    ],
+    "schedulingErrors": [],
+    "validation": {
+      "valid": true,
+      "violations": []
+    }
+  },
+  "complete": true,
+  "recovered": true,
+  "unresolvedRisks": [],
+  "taskOutcomes": [
+    {
+      "taskId": "T01",
+      "required": true,
+      "status": "resolved",
+      "explanation": "Scheduled and assigned to Sam (sam).",
+      "blockedBy": [],
+      "assignedPersonId": "sam",
+      "baselineAssignedPersonId": "sam"
+    },
+    {
+      "taskId": "T02",
+      "required": true,
+      "status": "resolved",
+      "explanation": "Scheduled and assigned to Alex (alex).",
+      "blockedBy": [],
+      "assignedPersonId": "alex",
+      "baselineAssignedPersonId": "alex"
+    }
+  ],
+  "summary": {
+    "requiredTotal": 2,
+    "requiredResolved": 2,
+    "requiredUnresolved": 0,
+    "optionalTotal": 0,
+    "optionalResolved": 0,
+    "optionalUnresolved": 0,
+    "requiredUnresolvedTaskIds": [],
+    "optionalUnresolvedTaskIds": []
+  }
+}

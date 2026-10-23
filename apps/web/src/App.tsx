@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ResilienceWorkspace,
+  type Snapshot
+} from "./resilience/ResilienceWorkspace";
+import type { RequestPhase } from "./resilience/model";
 
 type DisruptionType =
   | "person_unavailable"
@@ -80,6 +85,14 @@ const [saveMessage, setSaveMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [activity, setActivity] = useState<string[]>([]);
+  // Real plan captured from the server right before the last disruption.
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [phase, setPhase] = useState<RequestPhase>({ state: "idle" });
+  // A ref (not state) so a second click cannot start a second request in the
+  // moment before React re-renders the disabled buttons.
+  const inFlight = useRef(false);
+  const failure = useRef("");
+  const locked = busy || phase.state === "processing";
 
   const people = list(household?.people);
   const resources = list(household?.resources);
@@ -130,6 +143,7 @@ const [saveMessage, setSaveMessage] = useState("");
 }, [household, draftHousehold]);
 
   async function runAction(label: string, action: () => Promise<any>) {
+    failure.current = "";
     setBusy(true);
     setError("");
     record(`Calling ${label}`);
@@ -140,6 +154,7 @@ const [saveMessage, setSaveMessage] = useState("");
       return result;
     } catch (e) {
       const message = e instanceof Error ? e.message : "Unexpected error";
+      failure.current = message;
       setError(message);
       record(`${label} failed`);
       return null;
@@ -148,31 +163,79 @@ const [saveMessage, setSaveMessage] = useState("");
     }
   }
 
+  // `runAction` returns undefined for both a successful void action and a
+  // failure it already reported, so success is tracked explicitly here.
+  async function runStep(label: string, action: () => Promise<any>) {
+    const value = await runAction(label, action);
+    return { ok: failure.current === "", value };
+  }
+
   async function injectDisruption() {
-    const result = await runAction("simulate_disruption", () =>
-      api("/api/disrupt", { type, targetId })
-    );
+    if (inFlight.current) return;
+    inFlight.current = true;
 
-    if (!result) return;
+    const targetName = targets.find(item => item.id === targetId)?.name ?? targetId;
+    const trigger = `${disruptionLabels[type]}: ${targetName}`;
+    const fail = () =>
+      setPhase({ state: "failed", message: failure.current || "The request failed." });
 
-    const rebuilt = await runAction("rebuild_response_plan", () =>
-      api("/api/rebuild")
-    );
+    try {
+      // Capture the real pre-disruption state from the server, not from React
+      // state, so the comparison is against what the planner actually held.
+      setPhase({ state: "processing", step: "capturing the plan as it is right now" });
+      const captured = await runStep("get_current_plan (pre-disruption snapshot)", () =>
+        api("/api/plan")
+      );
+      if (!captured.ok) return fail();
+      const capturedAt = new Date().toISOString();
 
-    if (!rebuilt) return;
+      setPhase({ state: "processing", step: "applying the disruption" });
+      const disrupted = await runStep("simulate_disruption", () =>
+        api("/api/disrupt", { type, targetId })
+      );
+      if (!disrupted.ok) return fail();
 
-    const checked = await runAction("validate_plan", () =>
-      api("/api/validate")
-    );
+      setPhase({ state: "processing", step: "recomputing the recovery plan" });
+      const rebuilt = await runStep("rebuild_response_plan", () => api("/api/rebuild"));
+      if (!rebuilt.ok) return fail();
 
-    if (!checked) return;
+      setPhase({ state: "processing", step: "validating the revised plan" });
+      const checked = await runStep("validate_plan", () => api("/api/validate"));
+      if (!checked.ok) return fail();
 
-    await runAction("refresh scenario", refresh);
+      setPhase({ state: "processing", step: "loading the household, plan and risks" });
+      const reloaded = await runStep("refresh scenario", refresh);
+      if (!reloaded.ok) return fail();
+
+      setSnapshot({ capturedAt, trigger, plan: captured.value });
+      setPhase({ state: "succeeded", at: new Date().toISOString() });
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   async function resetScenario() {
-    const result = await runAction("reset_scenario", () => api("/api/reset"));
-    if (result) await runAction("refresh baseline", refresh);
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    const fail = () =>
+      setPhase({ state: "failed", message: failure.current || "The request failed." });
+
+    try {
+      setPhase({ state: "processing", step: "resetting the scenario" });
+      const reset = await runStep("reset_scenario", () => api("/api/reset"));
+      if (!reset.ok) return fail();
+      // The server's disruptions are gone, so the captured "before" is stale.
+      setSnapshot(null);
+
+      setPhase({ state: "processing", step: "reloading the baseline" });
+      const reloaded = await runStep("refresh baseline", refresh);
+      if (!reloaded.ok) return fail();
+
+      setPhase({ state: "succeeded", at: new Date().toISOString() });
+    } finally {
+      inFlight.current = false;
+    }
   }
 
   const status = plan?.status ?? "loading";
@@ -410,6 +473,8 @@ async function saveHouseholdModel() {
     await refresh();
 
     setDraftHousehold(structuredClone(draftHousehold));
+    // The model changed, so a snapshot of the old model is no longer comparable.
+    setSnapshot(null);
     setSaveMessage("Saved. The planner and risks have been refreshed.");
     record("Saved household model and refreshed the planner.");
   } catch (e) {
@@ -562,7 +627,7 @@ async function saveHouseholdModel() {
             <select
               id="disruption"
               value={type}
-              disabled={busy}
+              disabled={locked}
               onChange={e => setType(e.target.value as DisruptionType)}
             >
               {Object.entries(disruptionLabels).map(([key, label]) => (
@@ -574,7 +639,7 @@ async function saveHouseholdModel() {
             <select
               id="target"
               value={targetId}
-              disabled={busy || targets.length === 0}
+              disabled={locked || targets.length === 0}
               onChange={e => setTargetId(e.target.value)}
             >
               {targets.map(item => (
@@ -592,17 +657,17 @@ async function saveHouseholdModel() {
             <div className="button-row">
               <button
                 className="primary-button"
-                disabled={busy || !targetId}
+                disabled={locked || !targetId}
                 onClick={() => void injectDisruption()}
               >
-                {busy ? "WORKING…" : "INJECT DISRUPTION ↗"}
+                {locked ? "WORKING…" : "INJECT DISRUPTION ↗"}
               </button>
-              <button disabled={busy} onClick={() => void resetScenario()}>
+              <button disabled={locked} onClick={() => void resetScenario()}>
                 RESET ↺
               </button>
             </div>
             <div className="panel-foot">
-              <span>{busy ? "Executing tools…" : "Ready for another disruption"}</span>
+              <span>{locked ? "Executing tools…" : "Ready for another disruption"}</span>
               <span>STATEFUL DEMO</span>
             </div>
           </article>
@@ -725,7 +790,6 @@ async function saveHouseholdModel() {
       </div>
     ))}
   </div>
-)
             <details>
               <summary>Inspect current plan JSON</summary>
               <pre>{pretty(plan)}</pre>
@@ -736,6 +800,14 @@ async function saveHouseholdModel() {
             </details>
           </article>
         </section>
+
+        <ResilienceWorkspace
+          household={household}
+          plan={plan}
+          snapshot={snapshot}
+          phase={phase}
+          mode="full"
+        />
 
         <section className="main-grid lower-grid">
           <article className="panel">
@@ -889,6 +961,14 @@ async function saveHouseholdModel() {
               </p>
             </article>
           </section>
+
+          <ResilienceWorkspace
+            household={household}
+            plan={plan}
+            snapshot={snapshot}
+            phase={phase}
+            mode="map"
+          />
 
           <section className="panel">
             <div className="eyebrow">NEXT ACTION</div>
@@ -1209,51 +1289,6 @@ async function saveHouseholdModel() {
   </main>
 ) : null}
 
-        <main>
-          <section className="hero">
-            <div>
-              <div className="eyebrow">WORKSPACE / IN DEVELOPMENT</div>
-              <h1>
-                {activeView === "household"
-                  ? "Household model."
-                  : activeView === "agent"
-                    ? "Agent console."
-                    : activeView === "history"
-                      ? "Evidence & history."
-                      : "Offline plan."}
-                <br />
-                <em>Built in phases.</em>
-              </h1>
-              <p>
-                This view is being developed incrementally. The Chaos Lab
-                remains available for testing the working planning engine.
-              </p>
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2>
-              {activeView === "household"
-                ? "Household Model"
-                : activeView === "agent"
-                  ? "Agent Console"
-                  : activeView === "history"
-                    ? "Evidence & History"
-                    : "Offline Plan"}
-            </h2>
-            <p>
-              This view is not yet implemented. No functionality is claimed
-              until it is connected and tested.
-            </p>
-            <button
-              className="primary-button"
-              onClick={() => setActiveView("chaos")}
-            >
-              RETURN TO CHAOS LAB ↗
-            </button>
-          </section>
-        </main>
-      )
         </div>
       </div>
      </div>
