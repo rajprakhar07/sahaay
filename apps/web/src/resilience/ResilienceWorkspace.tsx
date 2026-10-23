@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { RecoveryCompare, RecoveryStatusBadge } from "./RecoveryCompare";
+import { RecoveryDecisions } from "./RecoveryDecisions";
 import { ResilienceMap } from "./ResilienceMap";
 import {
   parseBaselineReference,
@@ -151,6 +152,10 @@ export function ResilienceWorkspace({
             updateKey={signature(current)}
             reducedMotion={reducedMotion}
           />
+
+          {mode === "full" && (
+            <RecoveryDecisions household={hh} current={current} reference={reference} />
+          )}
 
           {mode === "full" && (
             <RecoveryCompare household={hh} current={current} reference={reference} />

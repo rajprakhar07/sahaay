@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { countChanges, incompleteReasons } from "./decisions";
 import { Icon, type IconKind } from "./icons";
 import {
   STATUS_DEFINITION,
@@ -82,6 +83,8 @@ export function RecoveryCompare({ household, current, reference }: RecoveryCompa
 
   const changed = model.changes.filter((c) => c.kind !== "unchanged");
   const refView = reference?.view;
+  const counts = countChanges(model.changes, current);
+  const incomplete = incompleteReasons(current);
 
   return (
     <section className="rc" aria-labelledby="rc-title">
@@ -106,6 +109,32 @@ export function RecoveryCompare({ household, current, reference }: RecoveryCompa
       {current.recoveryStatus && (
         <p className="rc-definition">{STATUS_DEFINITION[current.recoveryStatus]}</p>
       )}
+
+      {incomplete.length > 0 && (
+        <p className="rc-incomplete" data-testid="incomplete-reasons">
+          <strong>Why recovery is incomplete:</strong>{" "}
+          {incomplete.map((r) => `${r.title} (${r.taskIds.join(", ")})`).join(" · ")}
+        </p>
+      )}
+
+      <ul className="rc-glance" aria-label="Plan changes at a glance">
+        {reference && (
+          <>
+            <li data-count="recovered">
+              <strong>{counts.recovered}</strong> recovered
+            </li>
+            <li data-count="reassigned">
+              <strong>{counts.reassigned}</strong> reassigned
+            </li>
+            <li data-count="newly-failed">
+              <strong>{counts.newlyFailed}</strong> newly failed
+            </li>
+          </>
+        )}
+        <li data-count="unresolved">
+          <strong>{counts.stillUnresolved}</strong> unresolved now
+        </li>
+      </ul>
 
       <p className="muted rc-source">
         {!reference

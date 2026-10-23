@@ -79,3 +79,33 @@ is still scheduled).
   capacity beyond non-overlapping scheduled time.
 - Outcome diagnosis mirrors the scheduler's resource rules in `outcomes.ts`
   (`findResourceShortfalls`). If those rules change, update both.
+
+## Stage 3: decision trace and insights (web UI)
+
+The Chaos Lab shows a **decision trace** (disruption, affected tasks, recovery
+action, validation, remaining risks) above the before/after comparison, plus a
+few **resilience insights**. Nothing here changes the engine, API or MCP
+contracts: it is derived in `apps/web/src/resilience/decisions.ts` from the
+household model and the fields already returned by `get_current_plan`
+(`taskOutcomes`, `summary`, and `currentPlan.validation`).
+
+- **Why this person.** Every person is classified for a task using the planner's
+  own criteria: disrupted, unavailable in the household model, missing a
+  required skill, or eligible. If several people were eligible, the planner's
+  documented tie-break (least assigned time, then ID) is quoted. The UI does
+  not state workload figures at the moment of choice, because the engine does
+  not report them.
+- **Alternatives** are listed only for assignment failures
+  (`PERSON_UNAVAILABLE`, `REQUIRED_SKILL_MISSING`, `NO_FEASIBLE_ASSIGNMENT`).
+  Tasks blocked by a resource, location or prerequisite are excluded before
+  assignment, so no person alternatives are shown for them.
+- **Validation** reports the independent validator's result for the tasks that
+  were scheduled. A pass does not mean unscheduled tasks are handled, and the
+  UI says so.
+- **Insights**: required/optional tasks recovered and tasks affected (from the
+  engine summary), workload (minutes of resolved tasks, only when durations are
+  present), skills held by exactly one available person or by nobody, and
+  resources that are disrupted, short, or blocking tasks. No score or threshold
+  is invented.
+- `decisions.test.ts` checks these derivations against the real engine for
+  every combination of disruptions in two households.

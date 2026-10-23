@@ -155,9 +155,9 @@ function createServer() {
         targetId: z.string().min(1),
       }),
     },
-    
+
     async ({ type, targetId }) => {
-      
+
       const disruption: Disruption =
         type === "person_unavailable"
           ? { type, personId: targetId }
@@ -167,7 +167,39 @@ function createServer() {
 
       // Validate the target before changing scenario state.
       recoverPlan(household, [disruption]);
-      disruptions = [...disruptions, disruption];
+
+      // Avoid recording the same active disruption more than once.
+      const alreadyActive = disruptions.some((active) => {
+        if (active.type !== disruption.type) return false;
+
+        if (
+          active.type === "person_unavailable" &&
+          disruption.type === "person_unavailable"
+        ) {
+          return active.personId === disruption.personId;
+        }
+
+        if (
+          active.type === "resource_unavailable" &&
+          disruption.type === "resource_unavailable"
+        ) {
+          return active.resourceId === disruption.resourceId;
+        }
+
+        if (
+          active.type === "location_inaccessible" &&
+          disruption.type === "location_inaccessible"
+        ) {
+          return active.locationId === disruption.locationId;
+        }
+
+        return false;
+      });
+
+      if (!alreadyActive) {
+        disruptions = [...disruptions, disruption];
+      }
+
 
       return {
         content: [{

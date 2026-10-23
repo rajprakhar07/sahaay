@@ -46,6 +46,10 @@ export interface Task {
   resourceNeeds: { resourceId: string; quantity: number }[];
   locationId?: string;
   dependsOnTaskIds: string[];
+  /** Present when the backend reports it; used for workload insights only. */
+  estimatedMinutes?: number;
+  /** Explicit assignment stored in the household model, if any. */
+  assignedPersonId?: string;
 }
 export interface Household {
   people: Person[];
@@ -89,10 +93,21 @@ export interface PlanSummary {
   optionalUnresolvedTaskIds: string[];
 }
 
+/** What the engine's independent schedule validator reported for a plan. */
+export interface ValidationView {
+  valid: boolean;
+  violations: { type: string; message: string; taskIds: string[] }[];
+  schedulingErrors: string[];
+  /** Tasks that are actually present in the schedule that was validated. */
+  scheduledTaskIds: string[];
+}
+
 export interface PlanView {
   disruptions: Disruption[];
   recoveryStatus?: RecoveryStatus;
   summary?: PlanSummary;
+  /** Absent for payloads that do not carry a validation result. */
+  validation?: ValidationView;
   tasks: TaskState[];
   /** `outcomes`: engine taskOutcomes. `legacy`: derived from plan fields. */
   source: "outcomes" | "legacy";
@@ -195,6 +210,12 @@ export function parseHousehold(raw: unknown): Household | null {
         }),
         ...(typeof t.locationId === "string" ? { locationId: t.locationId } : {}),
         dependsOnTaskIds: asStringArray(t.dependsOnTaskIds),
+        ...(typeof t.estimatedMinutes === "number" && Number.isFinite(t.estimatedMinutes)
+          ? { estimatedMinutes: t.estimatedMinutes }
+          : {}),
+        ...(typeof t.assignedPersonId === "string"
+          ? { assignedPersonId: t.assignedPersonId }
+          : {}),
       });
     }
   }
@@ -245,6 +266,32 @@ function parseSummary(raw: unknown): PlanSummary | undefined {
   };
 }
 
+function parseValidation(planRaw: unknown): ValidationView | undefined {
+  const plan = asRecord(planRaw);
+  const v = plan ? asRecord(plan.validation) : null;
+  if (!plan || !v || typeof v.valid !== "boolean") return undefined;
+  return {
+    valid: v.valid,
+    violations: asArray(v.violations).flatMap((item) => {
+      const x = asRecord(item);
+      return x
+        ? [
+            {
+              type: asString(x.type, "UNKNOWN"),
+              message: asString(x.message),
+              taskIds: asStringArray(x.taskIds),
+            },
+          ]
+        : [];
+    }),
+    schedulingErrors: asStringArray(plan.schedulingErrors),
+    scheduledTaskIds: asArray(plan.schedule).flatMap((e) => {
+      const entry = asRecord(e);
+      return entry && typeof entry.taskId === "string" ? [entry.taskId] : [];
+    }),
+  };
+}
+
 const RECOVERY_STATUSES: RecoveryStatus[] = [
   "fully_recovered",
   "partially_recovered",
@@ -262,10 +309,13 @@ export function parsePlanView(raw: unknown): PlanView | null {
   const summary = parseSummary(r.summary);
   const disruptions = parseDisruptions(r.disruptions);
 
+  const validation = parseValidation(r.currentPlan ?? r.recoveryPlan);
+
   const base = {
     disruptions,
     ...(status ? { recoveryStatus: status } : {}),
     ...(summary ? { summary } : {}),
+    ...(validation ? { validation } : {}),
   };
 
   if (Array.isArray(r.taskOutcomes)) {
