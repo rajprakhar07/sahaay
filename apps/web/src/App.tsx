@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { RecoveryCompare } from "./resilience/RecoveryCompare";
+import { parseHousehold, parsePlanView, parseBaselineReference } from "./resilience/model";import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ResilienceWorkspace,
   type Snapshot
@@ -345,6 +346,22 @@ const baselineTasks = list(
   baseline?.assignments ??
   baseline?.scheduledTasks
 );
+const recoveryHousehold = parseHousehold(household);
+const recoveryPlan = parsePlanView(plan);
+const recoveryReference = snapshot
+  ? (() => {
+      const view = parsePlanView(snapshot.plan);
+      return view
+        ? {
+            kind: "snapshot" as const,
+            label: "Before last disruption",
+            capturedAt: snapshot.capturedAt,
+            trigger: snapshot.trigger,
+            view,
+          }
+        : parseBaselineReference(plan) ?? undefined;
+    })()
+  : parseBaselineReference(plan) ?? undefined;
 
 function assignee(task: Data | undefined): string {
   if (!task) return "Not assigned";
@@ -801,14 +818,13 @@ async function saveHouseholdModel() {
           </article>
         </section>
 
-        <ResilienceWorkspace
-          household={household}
-          plan={plan}
-          snapshot={snapshot}
-          phase={phase}
-          mode="full"
-        />
-
+       <ResilienceWorkspace
+  household={household}
+  plan={plan}
+  snapshot={snapshot}
+  phase={phase}
+  mode="full"
+/>
         <section className="main-grid lower-grid">
           <article className="panel">
             <div className="eyebrow">03 / CONSTRAINT CHECK</div>
@@ -940,25 +956,36 @@ async function saveHouseholdModel() {
             </div>
           )}
 
-          <section className="summary-grid">
+          <section className={`overview-readiness overview-readiness--${outcomeTone}`} data-testid="overview-readiness" aria-live="polite">
+            <div className="overview-readiness__mark" aria-hidden="true">{recoveryFailed ? "!" : partialPlan ? "~" : "✓"}</div>
+            <div className="overview-readiness__copy">
+              <span className="eyebrow">CURRENT PLAN · SIMULATED</span>
+              <h2>{outcomeTitle}</h2>
+              <p>{outcomeDescription}</p>
+            </div>
+            <div className="overview-readiness__meta">
+              <span>{activeDisruptions.length} active disruption{activeDisruptions.length === 1 ? "" : "s"}</span>
+              <span>{unassignedTasks.length} unassigned task{unassignedTasks.length === 1 ? "" : "s"}</span>
+            </div>
+          </section>
+
+          <section className="summary-grid" aria-label="Household summary">
             <article className="summary-card">
-              <span className="eyebrow">CURRENT SCENARIO</span>
-              <h2>{statusLabel}</h2>
-              <p>Result from the current simulated conditions.</p>
+              <span className="eyebrow">RECOVERY STATUS</span>
+              <h2>{outcomeTitle}</h2>
+              <p>{activeDisruptions.length ? "Status after the active simulated disruptions." : "Starting point before a disruption is introduced."}</p>
             </article>
 
             <article className="summary-card">
-              <span className="eyebrow">UNRESOLVED RISKS</span>
-              <h2>{risks.length}</h2>
-              <p>Issues the planner has not resolved.</p>
+              <span className="eyebrow">OPEN RISKS</span>
+              <h2 data-testid="overview-risk-count">{risks.length}</h2>
+              <p>{risks.length === 0 ? "No unresolved risks reported by the planner." : "Items the planner has not resolved and that need review."}</p>
             </article>
 
             <article className="summary-card">
               <span className="eyebrow">HOUSEHOLD MODEL</span>
               <h2>{people.length} people</h2>
-              <p>
-                {resources.length} resources · {locations.length} locations
-              </p>
+              <p>{resources.length} resources · {locations.length} locations</p>
             </article>
           </section>
 
@@ -970,18 +997,18 @@ async function saveHouseholdModel() {
             mode="map"
           />
 
-          <section className="panel">
-            <div className="eyebrow">NEXT ACTION</div>
-            <h2>Break the plan. See what survives.</h2>
-            <p>
-              Make a helper unavailable, remove a resource, or block a
-              location. Sahaay will recalculate and validate the response.
-            </p>
-            <button
-              className="primary-button"
-              onClick={() => setActiveView("chaos")}
-            >
-              OPEN CHAOS LAB ↗
+          <section className="overview-next panel" data-testid="overview-next-action">
+            <div className="overview-next__copy">
+              <div className="eyebrow">RECOMMENDED NEXT STEP</div>
+              <h2>{activeDisruptions.length || risks.length ? "Review what the planner could not resolve." : "Stress-test the backup plan."}</h2>
+              <p>
+                {activeDisruptions.length || risks.length
+                  ? "Open the Chaos Lab to inspect affected tasks, recovery decisions, validation, and remaining risks."
+                  : "Make a helper unavailable, remove a resource, or block a location. Sahaay will rebuild the plan and show what changed."}
+              </p>
+            </div>
+            <button className="primary-button" onClick={() => setActiveView("chaos")}>
+              {activeDisruptions.length || risks.length ? "REVIEW RECOVERY ↗" : "RUN A RESILIENCE DRILL ↗"}
             </button>
           </section>
 
@@ -1250,41 +1277,286 @@ async function saveHouseholdModel() {
       </>
     )}
   </main>
-) : (["agent", "history", "offline"] as View[]).includes(activeView) ? (
+
+) : activeView === "agent" ? (
   <main>
     <section className="hero">
       <div>
-        <div className="eyebrow">WORKSPACE / IN DEVELOPMENT</div>
-        <h1>
-          {activeView === "agent"
-            ? "Agent console."
-            : activeView === "history"
-              ? "Evidence & history."
-              : "Offline plan."}
-          <br />
-          <em>Built in phases.</em>
-        </h1>
+        <div className="eyebrow">04 / AGENT CONSOLE</div>
+        <h1>Agent console.<br /><em>See the work.</em></h1>
         <p>
-          This view is being developed incrementally. The Household Model
-          and Chaos Lab remain available for testing.
+          Inspect recorded actions, current planning results, and validation
+          output. These are tool summaries, not hidden model reasoning.
         </p>
       </div>
     </section>
+
+    {error && (
+      <section className="panel" role="alert">
+        <h2>Latest error</h2>
+        <p>{error}</p>
+      </section>
+    )}
+
+    <section className="summary-grid">
+      <article className="summary-card">
+        <span className="card-label">ENGINE STATUS</span>
+        <h2>{busy ? "PROCESSING" : "READY / IDLE"}</h2>
+        <p>{phase.state === "processing" ? phase.step : "No active request"}</p>
+      </article>
+      <article className="summary-card">
+        <span className="card-label">UNRESOLVED RISKS</span>
+        <h2>{risks.length}</h2>
+        <p>Reported by the planning API</p>
+      </article>
+      <article className="summary-card">
+        <span className="card-label">VALIDATION</span>
+        <h2>{validation ? "RESULT AVAILABLE" : "NOT LOADED"}</h2>
+        <p>Inspect the response below for details.</p>
+      </article>
+    </section>
+
     <section className="panel">
-      <h2>
-        {activeView === "agent"
-          ? "Agent Console"
-          : activeView === "history"
-            ? "Evidence & History"
-            : "Offline Plan"}
-      </h2>
-      <p>This workspace is not yet implemented.</p>
+      <div className="eyebrow">ACTION HISTORY</div>
+      <h2>Recorded tool activity</h2>
+      {activity.length ? (
+        activity.map((entry, index) => (
+          <div className="activity-row" key={`${entry}-${index}`}>
+            <code>{String(index + 1).padStart(2, "0")}</code>
+            <span>{entry}</span>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No activity has been recorded in this session.</p>
+      )}
+      <div className="tool-list">
+        <code>get_current_plan</code>
+        <code>simulate_disruption</code>
+        <code>rebuild_response_plan</code>
+        <code>validate_plan</code>
+        <code>refresh scenario</code>
+        <code>reset_scenario</code>
+      </div>
+    </section>
+
+    <section className="panel">
+      <h2>Current plan</h2>
+      <pre>{pretty(plan ?? "No plan loaded")}</pre>
+      <h2>Validation result</h2>
+      <pre>{pretty(validation ?? "No validation result loaded")}</pre>
+    </section>
+  </main>
+) : activeView === "history" ? (
+  <main>
+    <section className="hero">
+      <div>
+        <div className="eyebrow">05 / EVIDENCE & HISTORY</div>
+        <h1>Every change.<br /><em>Every reason.</em></h1>
+        <p>
+          Review the actions recorded during this browser session and compare
+          the last captured plan with the current planning result.
+        </p>
+      </div>
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">SESSION TIMELINE</div>
+      <h2>Recent events</h2>
+      {activity.length ? (
+        activity.map((entry, index) => (
+          <div className="activity-row" key={`${entry}-${index}`}>
+            <code>{String(activity.length - index).padStart(2, "0")}</code>
+            <span>{entry}</span>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No events recorded yet.</p>
+      )}
+      <p className="muted">
+        This is an in-memory session log, not a persistent audit record.
+      </p>
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">BEFORE / AFTER</div>
+      <h2>Latest recovery comparison</h2>
+      {snapshot ? (
+        <>
+          <p><strong>Disruption:</strong> {snapshot.trigger}</p>
+          <p>
+            <strong>Captured:</strong>{" "}
+            {new Date(snapshot.capturedAt).toLocaleString()}
+          </p>
+          <h3>Plan before the disruption</h3>
+          <pre>{pretty(snapshot.plan)}</pre>
+          <h3>Current plan</h3>
+          <pre>{pretty(plan ?? "No current plan loaded")}</pre>
+        </>
+      ) : (
+        <p>
+          No before-and-after comparison is available. Trigger a disruption
+          in Chaos Lab to capture the plan before recovery.
+        </p>
+      )}
+    </section>
+
+    <section className="panel">
+      <h2>Current unresolved risks</h2>
+      {risks.length ? (
+        <ul>
+          {risks.map((risk, index) => (
+            <li key={index}>
+              {typeof risk === "string"
+                ? risk
+                : risk.title ?? risk.message ?? risk.description ??
+                  risk.type ?? `Risk ${index + 1}`}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>No unresolved risks are currently reported by the API.</p>
+      )}
+      <p className="muted">
+        Evidence shown here reflects the data currently available to this
+        session. It is not proof of real-world safety.
+      </p>
+    </section>
+  </main>
+) : activeView === "offline" ? (
+  <main className="offline-plan">
+    <section className="hero">
+      <div>
+        <div className="eyebrow">06 / OFFLINE PLAN</div>
+        <h1>A plan you can keep.<br /><em>Even offline.</em></h1>
+        <p>
+          Print this fictional household plan for reference when the dashboard
+          is unavailable. Verify all details and follow official emergency
+          instructions.
+        </p>
+      </div>
       <button
-        className="primary-button"
-        onClick={() => setActiveView("chaos")}
+        type="button"
+        className="primary-button no-print"
+        onClick={() => window.print()}
       >
-        RETURN TO CHAOS LAB ↗
+        PRINT / SAVE AS PDF ↗
       </button>
+    </section>
+
+    {error && <p className="error-banner" role="alert">{error}</p>}
+
+    <section className="panel">
+      <div className="eyebrow">HOUSEHOLD</div>
+      <h2>People and responsibilities</h2>
+      {list(household?.people).length ? (
+        <ul>
+          {list(household?.people).map((person, index) => (
+            <li key={person.id ?? index}>
+              <strong>{person.name ?? person.id ?? `Person ${index + 1}`}</strong>
+              {" — "}
+              {person.available === false ? "Unavailable in baseline data" : "Available in baseline data"}
+              {Array.isArray(person.skills) && person.skills.length
+                ? ` · Skills: ${person.skills.join(", ")}`
+                : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>Household people have not loaded.</p>}
+    </section>
+
+
+<section className="panel">
+  <div className="eyebrow">BEFORE / AFTER</div>
+  <h2>Latest recovery comparison</h2>
+
+  {snapshot ? (
+    <>
+      <div className="scenario-state">
+        <strong>LAST SIMULATED DISRUPTION</strong>
+        <p>{snapshot.trigger}</p>
+        <p className="muted">
+          Captured {new Date(snapshot.capturedAt).toLocaleString()}
+        </p>
+      </div>
+
+      <ResilienceWorkspace
+        household={household}
+        plan={plan}
+        snapshot={snapshot}
+        phase={phase}
+        mode="full"
+      />
+
+      <details>
+        <summary>Inspect captured plan JSON</summary>
+        <pre>{pretty(snapshot.plan)}</pre>
+      </details>
+
+      <details>
+        <summary>Inspect current plan JSON</summary>
+        <pre>{pretty(plan ?? "No current plan loaded")}</pre>
+      </details>
+    </>
+  ) : (
+    <p>
+      No before-and-after comparison is available yet.
+      Trigger a disruption in Chaos Lab to capture the plan
+      before recovery.
+    </p>
+  )}
+</section>
+
+
+    <section className="panel">
+      <h2>Resources and locations</h2>
+      <h3>Resources</h3>
+      {list(household?.resources).length ? (
+        <ul>
+          {list(household?.resources).map((resource, index) => (
+            <li key={resource.id ?? index}>
+              {resource.name ?? resource.id ?? `Resource ${index + 1}`}
+              {resource.quantity !== undefined ? ` · Quantity: ${resource.quantity}` : ""}
+              {resource.available === false ? " · Unavailable" : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>No resources have loaded.</p>}
+      <h3>Locations</h3>
+      {list(household?.locations).length ? (
+        <ul>
+          {list(household?.locations).map((location, index) => (
+            <li key={location.id ?? index}>
+              {location.name ?? location.id ?? `Location ${index + 1}`}
+              {location.accessible === false ? " · Inaccessible" : ""}
+              {location.description ? ` · ${location.description}` : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>No locations have loaded.</p>}
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">WARNINGS</div>
+      <h2>Unresolved risks</h2>
+      {risks.length ? (
+        <ul>
+          {risks.map((risk, index) => (
+            <li key={index}>
+              {typeof risk === "string"
+                ? risk
+                : risk.title ?? risk.message ?? risk.description ??
+                  risk.type ?? `Risk ${index + 1}`}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>No unresolved risks are currently reported by the planner.</p>
+      )}
+      <p>
+        This document is generated from a simulated preparedness prototype.
+        Confirm assignments, supplies, and safe procedures with household
+        members. In an emergency, follow official local guidance.
+      </p>
     </section>
   </main>
 ) : null}

@@ -273,12 +273,27 @@ describe("reduced motion", () => {
 });
 
 describe("Overview", () => {
-  it("shows the live map without the comparison panel", async () => {
+  it("shows the live map and a judge-readable readiness summary without the comparison panel", async () => {
     await renderLoaded();
     fireEvent.click(screen.getByRole("button", { name: /Overview/ }));
 
     await waitFor(() => expect(document.querySelector(".rm-svg")).not.toBeNull());
     expect(document.querySelector(".rc")).toBeNull();
     expect(document.querySelectorAll(".rm-node")).toHaveLength(7);
+    expect(screen.getByTestId("overview-readiness").textContent).toContain("BASELINE PLAN");
+    expect(screen.getByTestId("overview-risk-count").textContent).toBe("0");
+    expect(screen.getByTestId("overview-next-action").textContent?.toLowerCase()).toContain("stress-test the backup plan");
+    expect(screen.getByRole("button", { name: /RUN A RESILIENCE DRILL/ })).toBeTruthy();
+  });
+
+  it("changes the Overview next step when a disruption remains active", async () => {
+    await renderLoaded();
+    await inject("person_unavailable", "sam");
+    fireEvent.click(screen.getByRole("button", { name: /Overview/ }));
+
+    await waitFor(() => expect(screen.getByTestId("overview-readiness").textContent).toContain("PLAN RECOVERED"));
+    expect(screen.getByTestId("overview-readiness").textContent).toContain("1 active disruption");
+    expect(screen.getByTestId("overview-next-action").textContent).toContain("Review what the planner could not resolve.");
+    expect(screen.getByRole("button", { name: /REVIEW RECOVERY/ })).toBeTruthy();
   });
 });
