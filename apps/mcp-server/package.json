@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/server.ts",
+    "test:e2e": "tsx src/smoke-test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
