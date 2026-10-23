@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import ResilienceMap from "./ResilienceMap";
 
 type DisruptionType =
   | "person_unavailable"
@@ -889,6 +890,12 @@ async function saveHouseholdModel() {
               </p>
             </article>
           </section>
+
+          <ResilienceMap
+            household={household}
+            plan={plan}
+            activeDisruptions={activeDisruptions}
+          />
 
           <section className="panel">
             <div className="eyebrow">NEXT ACTION</div>
