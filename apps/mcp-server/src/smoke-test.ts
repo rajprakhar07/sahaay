@@ -16,6 +16,22 @@ const client = new Client(
   },
 );
 
+function parseToolJson<T>(
+  result: { content: Array<{ type: string; text?: string }> },
+  label: string,
+): T {
+  const text = result.content
+    .filter((item) => item.type === "text")
+    .map((item) => item.text ?? "")
+    .join("\n");
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${label} did not return valid JSON: ${text}`);
+  }
+}
+
 try {
   const transport = new StreamableHTTPClientTransport(
     new URL("http://127.0.0.1:3001/mcp"),
@@ -31,12 +47,14 @@ try {
 
   const { tools } = await client.listTools();
   const expected = [
+    "update_household_state",
     "get_household_state",
     "get_current_plan",
     "simulate_disruption",
     "rebuild_response_plan",
     "validate_plan",
     "get_unresolved_risks",
+    "reset_household_state",
     "reset_scenario",
   ];
 
@@ -47,6 +65,11 @@ try {
     if (!actual.includes(name)) {
       throw new Error(`Missing MCP tool: ${name}`);
     }
+  }
+
+  const initialReset = await client.callTool({ name: "reset_household_state" });
+  if (initialReset.isError) {
+    throw new Error("Could not reset scenario before end-to-end validation.");
   }
 
   for (const name of [
@@ -62,11 +85,30 @@ try {
     console.log(`PASS: ${name}`);
   }
 
+  const baselineResult = await client.callTool({ name: "get_current_plan" });
+  if (baselineResult.isError) {
+    throw new Error("Could not retrieve the baseline plan.");
+  }
+  const baseline = parseToolJson<{
+    complete: boolean;
+    currentPlan: { assignedTasks?: Array<{ id?: string; assignedPersonId?: string }> };
+  }>(baselineResult, "Baseline plan");
+  if (!baseline.complete) {
+    throw new Error("Expected the baseline scenario to be complete before disruption.");
+  }
+  const baselineT01 = baseline.currentPlan.assignedTasks?.find(
+    (task) => task.id === "T01",
+  );
+  if (baselineT01?.assignedPersonId !== "sam") {
+    throw new Error(`Expected baseline T01 assignment to Sam, got ${JSON.stringify(baselineT01)}.`);
+  }
+  console.log("PASS: baseline plan assigns T01 to Sam");
+
   const simulation = await client.callTool({
     name: "simulate_disruption",
     arguments: {
       type: "person_unavailable",
-      targetId: "alex",
+      targetId: "sam",
     },
   });
 
@@ -74,7 +116,43 @@ try {
     throw new Error(`Simulation failed: ${JSON.stringify(simulation.content)}`);
   }
   console.log("PASS: simulate_disruption");
-    const validationAfterDisruption = await client.callTool({
+
+  const recoveredPlanResult = await client.callTool({ name: "get_current_plan" });
+  if (recoveredPlanResult.isError) {
+    throw new Error("Could not retrieve the plan after person disruption.");
+  }
+  const recoveredPlan = parseToolJson<{
+    currentPlan: { assignedTasks?: Array<{ id?: string; assignedPersonId?: string }> };
+  }>(recoveredPlanResult, "Recovered plan");
+  const recoveredT01 = recoveredPlan.currentPlan.assignedTasks?.find(
+    (task) => task.id === "T01",
+  );
+  if (recoveredT01?.assignedPersonId !== "taylor") {
+    throw new Error(`Expected T01 to be reassigned to Taylor after Sam becomes unavailable, got ${JSON.stringify(recoveredT01)}.`);
+  }
+  console.log("PASS: unavailable helper triggers real reassignment to Taylor");
+
+  const duplicateSimulation = await client.callTool({
+    name: "simulate_disruption",
+    arguments: { type: "person_unavailable", targetId: "sam" },
+  });
+  if (duplicateSimulation.isError) {
+    throw new Error("Repeating an active disruption should be accepted idempotently.");
+  }
+  const householdAfterDuplicate = await client.callTool({ name: "get_current_plan" });
+  const duplicatePlan = parseToolJson<{
+    disruptions: Array<{ type: string; personId?: string }>;
+  }>(householdAfterDuplicate, "Plan after duplicate disruption");
+  if (
+    duplicatePlan.disruptions.filter(
+      (item) => item.type === "person_unavailable" && item.personId === "sam",
+    ).length !== 1
+  ) {
+    throw new Error("Repeated identical disruption was recorded more than once.");
+  }
+  console.log("PASS: repeated disruption is idempotent");
+
+  const validationAfterDisruption = await client.callTool({
     name: "validate_plan",
   });
 

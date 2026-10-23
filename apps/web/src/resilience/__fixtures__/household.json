@@ -1,0 +1,78 @@
+{
+  "id": "demo-household",
+  "people": [
+    {
+      "id": "alex",
+      "name": "Alex",
+      "skills": [
+        "first-aid"
+      ],
+      "available": true
+    },
+    {
+      "id": "sam",
+      "name": "Sam",
+      "skills": [
+        "communication"
+      ],
+      "available": true
+    },
+    {
+      "id": "taylor",
+      "name": "Taylor",
+      "skills": [
+        "communication"
+      ],
+      "available": true
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Check household members",
+      "description": "",
+      "priority": "critical",
+      "required": true,
+      "estimatedMinutes": 10,
+      "requiredSkills": [
+        "communication"
+      ],
+      "resourceNeeds": [],
+      "locationId": "home",
+      "dependsOnTaskIds": []
+    },
+    {
+      "id": "T02",
+      "title": "Prepare emergency supplies",
+      "description": "",
+      "priority": "high",
+      "required": true,
+      "estimatedMinutes": 20,
+      "requiredSkills": [],
+      "resourceNeeds": [
+        {
+          "resourceId": "water",
+          "quantity": 1
+        }
+      ],
+      "locationId": "home",
+      "dependsOnTaskIds": []
+    }
+  ],
+  "resources": [
+    {
+      "id": "water",
+      "name": "Water kit",
+      "kind": "reusable",
+      "quantity": 1,
+      "unit": "kit"
+    }
+  ],
+  "locations": [
+    {
+      "id": "home",
+      "name": "Home",
+      "description": "Fictional demo location"
+    }
+  ]
+}

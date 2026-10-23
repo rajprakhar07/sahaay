@@ -8,8 +8,11 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "npm run test -w @sahaay/engine",
-    "typecheck": "npm run typecheck -w @sahaay/engine"
+    "test": "npm run test -w @sahaay/engine && npm run test -w @sahaay/web",
+    "typecheck": "npm run typecheck -w @sahaay/engine",
+    "dev": "npm run dev --workspaces --if-present",
+    "build": "npm run build -w @sahaay/web",
+    "typecheck:all": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

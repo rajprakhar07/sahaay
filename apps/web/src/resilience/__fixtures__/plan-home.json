@@ -1,0 +1,144 @@
+{
+  "status": "recovery_failed",
+  "recoveryStatus": "recovery_failed",
+  "legacyStatus": "failed",
+  "disruptions": [
+    {
+      "type": "location_inaccessible",
+      "locationId": "home"
+    }
+  ],
+  "baselinePlan": {
+    "complete": true,
+    "feasible": true,
+    "assignedTasks": [
+      {
+        "id": "T01",
+        "title": "Check household members",
+        "description": "",
+        "priority": "critical",
+        "required": true,
+        "estimatedMinutes": 10,
+        "requiredSkills": [
+          "communication"
+        ],
+        "resourceNeeds": [],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "sam"
+      },
+      {
+        "id": "T02",
+        "title": "Prepare emergency supplies",
+        "description": "",
+        "priority": "high",
+        "required": true,
+        "estimatedMinutes": 20,
+        "requiredSkills": [],
+        "resourceNeeds": [
+          {
+            "resourceId": "water",
+            "quantity": 1
+          }
+        ],
+        "locationId": "home",
+        "dependsOnTaskIds": [],
+        "assignedPersonId": "alex"
+      }
+    ],
+    "unassignedTasks": [],
+    "schedule": [
+      {
+        "taskId": "T01",
+        "startMinute": 0,
+        "endMinute": 10
+      },
+      {
+        "taskId": "T02",
+        "startMinute": 0,
+        "endMinute": 20
+      }
+    ],
+    "schedulingErrors": [],
+    "validation": {
+      "valid": true,
+      "violations": []
+    }
+  },
+  "currentPlan": {
+    "complete": false,
+    "feasible": false,
+    "assignedTasks": [],
+    "unassignedTasks": [
+      {
+        "taskId": "T01",
+        "reason": "Blocked because location \"home\" is inaccessible in this simulated scenario."
+      },
+      {
+        "taskId": "T02",
+        "reason": "Blocked because location \"home\" is inaccessible in this simulated scenario."
+      }
+    ],
+    "schedule": [],
+    "schedulingErrors": [],
+    "validation": {
+      "valid": true,
+      "violations": []
+    }
+  },
+  "complete": false,
+  "recovered": false,
+  "unresolvedRisks": [
+    {
+      "taskId": "T01",
+      "reason": "Blocked because location \"home\" is inaccessible in this simulated scenario."
+    },
+    {
+      "taskId": "T02",
+      "reason": "Blocked because location \"home\" is inaccessible in this simulated scenario."
+    }
+  ],
+  "taskOutcomes": [
+    {
+      "taskId": "T01",
+      "required": true,
+      "status": "blocked",
+      "reasonCode": "LOCATION_INACCESSIBLE",
+      "explanation": "Blocked: location Home (home) is inaccessible in this scenario.",
+      "blockedBy": [
+        {
+          "kind": "location",
+          "id": "home"
+        }
+      ],
+      "baselineAssignedPersonId": "sam"
+    },
+    {
+      "taskId": "T02",
+      "required": true,
+      "status": "blocked",
+      "reasonCode": "LOCATION_INACCESSIBLE",
+      "explanation": "Blocked: location Home (home) is inaccessible in this scenario.",
+      "blockedBy": [
+        {
+          "kind": "location",
+          "id": "home"
+        }
+      ],
+      "baselineAssignedPersonId": "alex"
+    }
+  ],
+  "summary": {
+    "requiredTotal": 2,
+    "requiredResolved": 0,
+    "requiredUnresolved": 2,
+    "optionalTotal": 0,
+    "optionalResolved": 0,
+    "optionalUnresolved": 0,
+    "requiredUnresolvedTaskIds": [
+      "T01",
+      "T02"
+    ],
+    "optionalUnresolvedTaskIds": []
+  }
+}

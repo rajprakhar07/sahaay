@@ -1,0 +1,1570 @@
+import { RecoveryCompare } from "./resilience/RecoveryCompare";
+import { parseHousehold, parsePlanView, parseBaselineReference } from "./resilience/model";import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ResilienceWorkspace,
+  type Snapshot
+} from "./resilience/ResilienceWorkspace";
+import type { RequestPhase } from "./resilience/model";
+
+type DisruptionType =
+  | "person_unavailable"
+  | "resource_unavailable"
+  | "location_inaccessible";
+
+type Data = Record<string, any>;
+type View =
+  | "overview"
+  | "chaos"
+  | "household"
+  | "agent"
+  | "history"
+  | "offline";
+  const validViews: View[] = [
+  "overview",
+  "chaos",
+  "household",
+  "agent",
+  "history",
+  "offline"
+];
+
+function readViewFromHash(): View {
+  const value = window.location.hash.replace(/^#\/?/, "");
+
+  return validViews.includes(value as View)
+    ? (value as View)
+    : "chaos";
+}
+
+const disruptionLabels: Record<DisruptionType, string> = {
+  person_unavailable: "Helper becomes unavailable",
+  resource_unavailable: "Resource becomes unavailable",
+  location_inaccessible: "Location becomes inaccessible"
+};
+
+async function api(path: string, body?: unknown): Promise<any> {
+  const response = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined
+      ? undefined
+      : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.error ?? `Request failed: ${response.status}`);
+  }
+
+  return result.data;
+}
+
+function list(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+export default function App() {
+  const [activeView, setActiveView] = useState<View>(readViewFromHash);
+
+useEffect(() => {
+  window.location.hash = `/${activeView}`;
+}, [activeView]);
+  
+  const [household, setHousehold] = useState<Data | null>(null);
+  const [draftHousehold, setDraftHousehold] = useState<Data | null>(null);
+const [saveMessage, setSaveMessage] = useState("");
+  const [plan, setPlan] = useState<Data | null>(null);
+  const [validation, setValidation] = useState<Data | null>(null);
+  const [risks, setRisks] = useState<any[]>([]);
+  const [type, setType] = useState<DisruptionType>("person_unavailable");
+  const [targetId, setTargetId] = useState("sam");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [activity, setActivity] = useState<string[]>([]);
+  // Real plan captured from the server right before the last disruption.
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [phase, setPhase] = useState<RequestPhase>({ state: "idle" });
+  // A ref (not state) so a second click cannot start a second request in the
+  // moment before React re-renders the disabled buttons.
+  const inFlight = useRef(false);
+  const failure = useRef("");
+  const locked = busy || phase.state === "processing";
+
+  const people = list(household?.people);
+  const resources = list(household?.resources);
+  const locations = list(household?.locations);
+
+  const targets = type === "person_unavailable"
+    ? people.map(person => ({ id: person.id, name: person.name }))
+    : type === "resource_unavailable"
+      ? resources.map(resource => ({ id: resource.id, name: resource.name }))
+      : locations.map(location => ({ id: location.id, name: location.name }));
+
+  const record = (message: string) => {
+    setActivity(previous => [
+      `${new Date().toLocaleTimeString()} — ${message}`,
+      ...previous
+    ].slice(0, 12));
+  };
+
+  const refresh = useCallback(async () => {
+    const [h, p, v, r] = await Promise.all([
+      api("/api/household"),
+      api("/api/plan"),
+      api("/api/validate"),
+      api("/api/risks")
+    ]);
+
+    setHousehold(h);
+    setPlan(p);
+    setValidation(v);
+    setRisks(list(r));
+  }, []);
+
+  useEffect(() => {
+    refresh()
+      .then(() => record("Connected to household and planning tools"))
+      .catch(e => setError(e.message));
+  }, [refresh]);
+
+  useEffect(() => {
+    if (targets.length && !targets.some(item => item.id === targetId)) {
+      setTargetId(targets[0].id);
+    }
+  }, [type, household]);
+  useEffect(() => {
+  if (household && !draftHousehold) {
+    setDraftHousehold(structuredClone(household));
+  }
+}, [household, draftHousehold]);
+
+  async function runAction(label: string, action: () => Promise<any>) {
+    failure.current = "";
+    setBusy(true);
+    setError("");
+    record(`Calling ${label}`);
+
+    try {
+      const result = await action();
+      record(`${label} completed`);
+      return result;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unexpected error";
+      failure.current = message;
+      setError(message);
+      record(`${label} failed`);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // `runAction` returns undefined for both a successful void action and a
+  // failure it already reported, so success is tracked explicitly here.
+  async function runStep(label: string, action: () => Promise<any>) {
+    const value = await runAction(label, action);
+    return { ok: failure.current === "", value };
+  }
+
+  async function injectDisruption() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    const targetName = targets.find(item => item.id === targetId)?.name ?? targetId;
+    const trigger = `${disruptionLabels[type]}: ${targetName}`;
+    const fail = () =>
+      setPhase({ state: "failed", message: failure.current || "The request failed." });
+
+    try {
+      // Capture the real pre-disruption state from the server, not from React
+      // state, so the comparison is against what the planner actually held.
+      setPhase({ state: "processing", step: "capturing the plan as it is right now" });
+      const captured = await runStep("get_current_plan (pre-disruption snapshot)", () =>
+        api("/api/plan")
+      );
+      if (!captured.ok) return fail();
+      const capturedAt = new Date().toISOString();
+
+      setPhase({ state: "processing", step: "applying the disruption" });
+      const disrupted = await runStep("simulate_disruption", () =>
+        api("/api/disrupt", { type, targetId })
+      );
+      if (!disrupted.ok) return fail();
+
+      setPhase({ state: "processing", step: "recomputing the recovery plan" });
+      const rebuilt = await runStep("rebuild_response_plan", () => api("/api/rebuild"));
+      if (!rebuilt.ok) return fail();
+
+      setPhase({ state: "processing", step: "validating the revised plan" });
+      const checked = await runStep("validate_plan", () => api("/api/validate"));
+      if (!checked.ok) return fail();
+
+      setPhase({ state: "processing", step: "loading the household, plan and risks" });
+      const reloaded = await runStep("refresh scenario", refresh);
+      if (!reloaded.ok) return fail();
+
+      setSnapshot({ capturedAt, trigger, plan: captured.value });
+      setPhase({ state: "succeeded", at: new Date().toISOString() });
+    } finally {
+      inFlight.current = false;
+    }
+  }
+
+  async function resetScenario() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    const fail = () =>
+      setPhase({ state: "failed", message: failure.current || "The request failed." });
+
+    try {
+      setPhase({ state: "processing", step: "resetting the scenario" });
+      const reset = await runStep("reset_scenario", () => api("/api/reset"));
+      if (!reset.ok) return fail();
+      // The server's disruptions are gone, so the captured "before" is stale.
+      setSnapshot(null);
+
+      setPhase({ state: "processing", step: "reloading the baseline" });
+      const reloaded = await runStep("refresh baseline", refresh);
+      if (!reloaded.ok) return fail();
+
+      setPhase({ state: "succeeded", at: new Date().toISOString() });
+    } finally {
+      inFlight.current = false;
+    }
+  }
+
+  const status = plan?.status ?? "loading";
+  const statusLabel = String(status).replace(/_/g, " ");
+  // Engine-defined recovery status; the heuristics below are only a fallback
+  // for responses from an older backend that does not send it.
+  const engineStatus: string | undefined =
+    typeof plan?.recoveryStatus === "string" ? plan.recoveryStatus : undefined;
+
+
+  const baseline = plan?.baselinePlan ?? plan?.originalPlan;
+  const current = plan?.currentPlan ?? plan?.recoveryPlan;
+  const tasks = list(
+    current?.assignedTasks ??
+    current?.tasks ??
+    current?.assignments ??
+    current?.scheduledTasks
+  );
+  const unassignedTasks = list(current?.unassignedTasks);
+const activeDisruptions = list(plan?.disruptions);
+
+  const validationViolations = list(
+    validation?.violations ?? validation?.validation?.violations
+  );
+  const scheduleValid: boolean | undefined =
+    typeof validation?.scheduledTasksValidation?.valid === "boolean"
+      ? validation.scheduledTasksValidation.valid
+      : undefined;
+  const validationFailed =
+    scheduleValid === false ||
+    (scheduleValid === undefined &&
+      (validation?.valid === false ||
+        validation?.validation?.valid === false ||
+        /invalid|fail/i.test(String(validation?.status ?? ""))));
+  const validationPassed =
+    scheduleValid === true ||
+    (scheduleValid === undefined &&
+      (validation?.valid === true ||
+        validation?.validation?.valid === true ||
+        (/valid|pass/i.test(String(validation?.status ?? "")) &&
+          !validationFailed)));
+
+  const recoveryFailed =
+    engineStatus !== undefined
+      ? engineStatus === "recovery_failed"
+      : status.toLowerCase() === "failed" ||
+        status.toLowerCase() === "infeasible" ||
+        current?.feasible === false;
+
+  const partialPlan =
+    engineStatus !== undefined
+      ? engineStatus === "partially_recovered"
+      : !recoveryFailed &&
+        (status.toLowerCase() === "partial" ||
+          unassignedTasks.length > 0 ||
+          risks.length > 0 ||
+          validationFailed);
+
+  const outcomeTitle =
+    recoveryFailed ? "RECOVERY FAILED" :
+    partialPlan ? "PARTIAL PLAN" :
+    engineStatus === "fully_recovered"
+      ? (activeDisruptions.length > 0 ? "PLAN RECOVERED" : "BASELINE PLAN") :
+    activeDisruptions.length > 0 &&
+      plan?.recovered === true &&
+      plan?.complete === true &&
+      current?.feasible !== false &&
+      validationPassed &&
+      unassignedTasks.length === 0 &&
+      risks.length === 0
+      ? "PLAN RECOVERED" :
+    status === "loading" ? "LOADING SCENARIO" :
+    "BASELINE PLAN";
+
+  const outcomeTone =
+    recoveryFailed ? "failed" :
+    partialPlan ? "partial" :
+    outcomeTitle === "PLAN RECOVERED" ||
+      outcomeTitle === "BASELINE PLAN"
+      ? "ready" : "pending";
+
+  const outcomeDescription =
+    recoveryFailed
+      ? "The current plan is infeasible. Human review is required; no successful recovery is claimed."
+      : partialPlan
+        ? "Some tasks, constraints, or risks remain unresolved. Review the details before relying on this plan."
+        : outcomeTitle === "PLAN RECOVERED" &&
+            Number(plan?.summary?.optionalUnresolved ?? 0) > 0
+          ? `All required tasks are planned. ${Number(plan?.summary?.optionalUnresolved ?? 0)} optional task(s) remain unresolved.`
+        : outcomeTitle === "PLAN RECOVERED"
+          ? "The planner reports a complete plan that passed the available validation checks for this simulated scenario."
+          : outcomeTitle === "BASELINE PLAN"
+            ? "Review the baseline against the recorded household assumptions. Validation does not prove real-world safety."
+            : "Waiting for the current household state and planning results.";
+
+  const outcomeFacts = [
+    { label: "ACTIVE DISRUPTIONS", value: activeDisruptions.length },
+    { label: "ASSIGNED TASKS", value: tasks.length },
+    { label: "UNRESOLVED TASKS", value: unassignedTasks.length },
+    { label: "REPORTED RISKS", value: risks.length }
+  ];
+
+
+const baselineTasks = list(
+  baseline?.assignedTasks ??
+  baseline?.tasks ??
+  baseline?.assignments ??
+  baseline?.scheduledTasks
+);
+const recoveryHousehold = parseHousehold(household);
+const recoveryPlan = parsePlanView(plan);
+const recoveryReference = snapshot
+  ? (() => {
+      const view = parsePlanView(snapshot.plan);
+      return view
+        ? {
+            kind: "snapshot" as const,
+            label: "Before last disruption",
+            capturedAt: snapshot.capturedAt,
+            trigger: snapshot.trigger,
+            view,
+          }
+        : parseBaselineReference(plan) ?? undefined;
+    })()
+  : parseBaselineReference(plan) ?? undefined;
+
+function assignee(task: Data | undefined): string {
+  if (!task) return "Not assigned";
+
+  const id =
+    task.assignedPersonId ??
+    task.assigneeName ??
+    task.personName ??
+    task.assignedTo ??
+    task.personId;
+
+  if (!id) return "Not assigned";
+
+  const person = people.find(
+    (item) => item.id === id || item.name === id
+  );
+
+  return person?.name ?? String(id);
+}
+
+const taskChanges = baselineTasks.map((original: Data) => {
+  const revised = tasks.find(
+    (task: Data) => task.id === original.id
+  );
+
+  const before = assignee(original);
+  const after = assignee(revised);
+
+  const changed = !revised || before !== after;
+
+  return {
+    id: original.id,
+    title: original.title ?? original.description ?? original.id,
+    before,
+    after,
+    changed,
+    missing: !revised
+  };
+});
+
+const newTasks = tasks.filter(
+  (task: Data) =>
+    !baselineTasks.some((original: Data) => original.id === task.id)
+);
+
+
+function describeDisruption(disruption: Data): string {
+  if (disruption.type === "person_unavailable") {
+    const person = people.find(
+      (item) => item.id === disruption.personId
+    );
+    return `${person?.name ?? disruption.personId} is unavailable`;
+  }
+
+  if (disruption.type === "resource_unavailable") {
+    const resource = resources.find(
+      (item) => item.id === disruption.resourceId
+    );
+    return `${resource?.name ?? disruption.resourceId} is unavailable`;
+  }
+
+  if (disruption.type === "location_inaccessible") {
+    const location = locations.find(
+      (item) => item.id === disruption.locationId
+    );
+    return `${location?.name ?? disruption.locationId} is inaccessible`;
+  }
+
+  return "Unknown disruption";
+}
+
+function updateDraftPerson(index: number, patch: Data) {
+  setDraftHousehold((current) =>
+    current
+      ? {
+          ...current,
+          people: current.people.map((person: Data, i: number) =>
+            i === index ? { ...person, ...patch } : person
+          ),
+        }
+      : current
+  );
+  setSaveMessage("");
+}
+
+function updateDraftResource(index: number, patch: Data) {
+  setDraftHousehold((current) =>
+    current
+      ? {
+          ...current,
+          resources: current.resources.map((resource: Data, i: number) =>
+            i === index ? { ...resource, ...patch } : resource
+          ),
+        }
+      : current
+  );
+  setSaveMessage("");
+}
+
+function updateDraftLocation(index: number, patch: Data) {
+  setDraftHousehold((current) =>
+    current
+      ? {
+          ...current,
+          locations: current.locations.map((location: Data, i: number) =>
+            i === index ? { ...location, ...patch } : location
+          ),
+        }
+      : current
+  );
+  setSaveMessage("");
+}
+
+async function saveHouseholdModel() {
+  if (!draftHousehold || busy) return;
+
+  setBusy(true);
+  setError("");
+  setSaveMessage("");
+
+  try {
+    await api("/api/household/update", {
+      household: draftHousehold,
+    });
+
+    await refresh();
+
+    setDraftHousehold(structuredClone(draftHousehold));
+    // The model changed, so a snapshot of the old model is no longer comparable.
+    setSnapshot(null);
+    setSaveMessage("Saved. The planner and risks have been refreshed.");
+    record("Saved household model and refreshed the planner.");
+  } catch (e) {
+    setError(e instanceof Error ? e.message : String(e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+ 
+  return (
+    <div className="app-shell">
+    <header className="topbar">
+  <div className="brand-mark">S</div>
+  <div className="brand-name">
+    SAHAAY <span>THE BACKUP BRAIN</span>
+  </div>
+  <div className="sim-badge">● SIMULATED SCENARIO</div>
+</header>
+
+      
+      
+      <div className="workspace-layout">
+  <aside className="sidebar" aria-label="Main navigation">
+    <div className="sidebar-label">WORKSPACE</div>
+
+    {([
+      ["overview", "Overview", "01"],
+      ["chaos", "Chaos Lab", "02"],
+      ["household", "Household Model", "03"],
+      ["agent", "Agent Console", "04"],
+      ["history", "Evidence & History", "05"],
+      ["offline", "Offline Plan", "06"],
+    ] as [View, string, string][]).map(([view, label, number]) => (
+      <button
+        key={view}
+        type="button"
+        className={`nav-item ${activeView === view ? "active" : ""}`}
+        aria-current={activeView === view ? "page" : undefined}
+        onClick={() => setActiveView(view)}
+      >
+        <span>{number}</span>
+        {label}
+      </button>
+    ))}
+
+    <div className="sidebar-note">
+      <span className="status-dot" />
+      <strong>DEMO MODE</strong>
+      <small>Fictional household · Simulated disruptions</small>
+    </div>
+  </aside>
+
+  <div className="view-container">
+
+      {activeView === "chaos" && (
+  <main>
+    <section className="hero">
+          <div>
+            <div className="eyebrow">CHAOS LAB / 01</div>
+            <h1>Break the plan.<br /><em>Watch it rebuild.</em></h1>
+            <p>
+              Inject a disruption into a fictional household. Sahaay calls
+              its planning tools, checks the revised plan, and exposes
+              anything it cannot resolve.
+            </p>
+          </div>
+          <div className="engine-stamp">
+            <span>LIVE</span>
+            <strong>SCENARIO<br />ENGINE</strong>
+            <small>DETERMINISTIC PLANNER</small>
+          </div>
+        </section>
+
+        {error && (
+          <div className="error-banner" role="alert">
+            <strong>Action failed</strong>
+            <span>{error}</span>
+            <button onClick={() => {
+              setError("");
+              void refresh().catch(e => setError(e.message));
+            }}>Retry</button>
+          </div>
+        )}
+
+        <section className="summary-grid">
+          <article className="summary-card">
+            <span className="card-label">SCENARIO STATUS</span>
+            <strong className={`status status-${status}`}>{statusLabel.toUpperCase()}</strong>
+            <p>{plan?.complete
+              ? "All mandatory tasks are planned"
+              : plan?.recovered
+                ? "Recovery reported with limitations"
+                : "Review the current plan and risks"}</p>
+          </article>
+          <article className="summary-card">
+            <span className="card-label">UNRESOLVED RISKS</span>
+            <strong>{risks.length}</strong>
+            <p>Reported by the planning engine</p>
+          </article>
+          <article className="summary-card">
+            <span className="card-label">HOUSEHOLD MODEL</span>
+            <strong>{people.length} PEOPLE</strong>
+            <p>{resources.length} resources · {locations.length} locations</p>
+          </article>
+        </section>
+
+        <section className={`outcome-panel outcome-${outcomeTone}`} aria-live="polite">
+          <div className="outcome-main">
+            <div className="outcome-heading">
+              <span className="outcome-indicator" aria-hidden="true" />
+              <span className="eyebrow">CURRENT SCENARIO / DECISION SUMMARY</span>
+            </div>
+            <h2>{outcomeTitle}</h2>
+            <p>{outcomeDescription}</p>
+            <div className="outcome-validation">
+              <span>VALIDATION</span>
+              <strong>
+                {validationPassed
+                  ? "CHECKS PASSED"
+                  : validationFailed
+                    ? "CHECKS FAILED"
+                    : "RESULT NOT CONFIRMED"}
+              </strong>
+              {validationViolations.length > 0 && (
+                <span>{validationViolations.length} reported violation(s)</span>
+              )}
+            </div>
+          </div>
+          <div className="outcome-facts">
+            {outcomeFacts.map((fact) => (
+              <div className="outcome-fact" key={fact.label}>
+                <span>{fact.label}</span>
+                <strong>{fact.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="main-grid">
+          <article className="panel">
+            <div className="eyebrow">01 / INJECT A FAILURE</div>
+            <h2>Change an assumption</h2>
+            <p className="muted">
+              Each disruption changes the server-side scenario state.
+              You can apply another disruption after recovery.
+            </p>
+
+            <label htmlFor="disruption">DISRUPTION TYPE</label>
+            <select
+              id="disruption"
+              value={type}
+              disabled={locked}
+              onChange={e => setType(e.target.value as DisruptionType)}
+            >
+              {Object.entries(disruptionLabels).map(([key, label]) => (
+                <option key={key} value={key}>{label}</option>
+              ))}
+            </select>
+
+            <label htmlFor="target">TARGET</label>
+            <select
+              id="target"
+              value={targetId}
+              disabled={locked || targets.length === 0}
+              onChange={e => setTargetId(e.target.value)}
+            >
+              {targets.map(item => (
+                <option key={item.id} value={item.id}>
+                  {item.name} · {item.id}
+                </option>
+              ))}
+            </select>
+
+            <div className="simulation-note">
+              Synthetic event only. This is not a live alert or an
+              instruction for an actual emergency.
+            </div>
+
+            <div className="button-row">
+              <button
+                className="primary-button"
+                disabled={locked || !targetId}
+                onClick={() => void injectDisruption()}
+              >
+                {locked ? "WORKING…" : "INJECT DISRUPTION ↗"}
+              </button>
+              <button disabled={locked} onClick={() => void resetScenario()}>
+                RESET ↺
+              </button>
+            </div>
+            <div className="panel-foot">
+              <span>{locked ? "Executing tools…" : "Ready for another disruption"}</span>
+              <span>STATEFUL DEMO</span>
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="eyebrow">02 / PLAN DNA</div>
+            <h2>Computed response plan</h2>
+            <div className="scenario-state">
+  <strong>ACTIVE SIMULATED DISRUPTIONS</strong>
+
+  {activeDisruptions.length ? (
+    activeDisruptions.map((disruption, index) => (
+      <div className="task-row" key={`${disruption.type}-${index}`}>
+        <code>EVENT {index + 1}</code>
+        <div>
+          <strong>{describeDisruption(disruption)}</strong>
+          <small>Simulated scenario input — not a live alert</small>
+        </div>
+        <span>ACTIVE</span>
+      </div>
+    ))
+  ) : (
+    <p className="muted">No active disruptions. Baseline scenario.</p>
+  )}
+</div>
+
+           
+<div className="comparison">
+  <div>
+    <span>BASELINE ASSIGNED</span>
+    <strong>{baselineTasks.length}</strong>
+  </div>
+  <span className="arrow">→</span>
+  <div>
+    <span>CURRENT ASSIGNED</span>
+    <strong>{tasks.length}</strong>
+  </div>
+</div>
+
+<div className="plan-diff-heading">
+  <div>
+    <div className="eyebrow">PLAN DNA / TASK COMPARISON</div>
+    <h3>What changed?</h3>
+  </div>
+  <span className="diff-count">
+    {taskChanges.filter((task: Data) => task.changed).length}
+    {" "}CHANGED
+  </span>
+</div>
+
+{taskChanges.map((task: Data) => (
+  <div className="diff-row" key={task.id}>
+    <div className="diff-title">
+      <code>{task.id}</code>
+      <strong>{task.title}</strong>
+    </div>
+
+    <div className="diff-assignments">
+      <div>
+        <small>BEFORE</small>
+        <span>{task.before}</span>
+      </div>
+      <span className="diff-arrow">→</span>
+      <div>
+        <small>AFTER</small>
+        <span>{task.after}</span>
+      </div>
+    </div>
+
+    <span className={`diff-status ${task.changed ? "changed" : "unchanged"}`}>
+      {task.missing
+        ? "MISSING"
+        : task.changed
+          ? "CHANGED"
+          : "UNCHANGED"}
+    </span>
+  </div>
+))}
+
+{newTasks.map((task: Data) => (
+  <div className="diff-row" key={task.id}>
+    <div className="diff-title">
+      <code>{task.id}</code>
+      <strong>{task.title ?? task.description ?? "New task"}</strong>
+    </div>
+
+    <div className="diff-assignments">
+      <div>
+        <small>BEFORE</small>
+        <span>Not in baseline</span>
+      </div>
+      <span className="diff-arrow">→</span>
+      <div>
+        <small>AFTER</small>
+        <span>{assignee(task)}</span>
+      </div>
+    </div>
+
+    <span className="diff-status changed">NEW TASK</span>
+  </div>
+))}
+
+{taskChanges.length === 0 && newTasks.length === 0 && (
+  <p className="muted">
+    No assigned tasks are available for comparison yet.
+  </p>
+)}
+
+  <div className="unresolved-tasks">
+    <div className="eyebrow">UNRESOLVED TASKS</div>
+
+    {unassignedTasks.map((task, index) => (
+      <div className="task-row" key={task.taskId ?? index}>
+        <code>{task.taskId ?? `TASK ${index + 1}`}</code>
+        <div>
+          <strong>{task.reason ?? "No feasible assignment found"}</strong>
+          <small>Requires review or human intervention</small>
+        </div>
+        <span>UNRESOLVED</span>
+      </div>
+    ))}
+  </div>
+            <details>
+              <summary>Inspect current plan JSON</summary>
+              <pre>{pretty(plan)}</pre>
+            </details>
+            <details>
+              <summary>Inspect household state JSON</summary>
+              <pre>{pretty(household)}</pre>
+            </details>
+          </article>
+        </section>
+
+       <ResilienceWorkspace
+  household={household}
+  plan={plan}
+  snapshot={snapshot}
+  phase={phase}
+  mode="full"
+/>
+        <section className="main-grid lower-grid">
+          <article className="panel">
+            <div className="eyebrow">03 / CONSTRAINT CHECK</div>
+            <h2>Validation & risks</h2>
+            <div className="validation-strip">
+              <strong>{String(validation?.status ?? "awaiting result").replace(/_/g, " ").toUpperCase()}</strong>
+              <span>{validation?.recovered
+                ? "Recovery reported by planner"
+                : "No successful recovery claim"}</span>
+            </div>
+
+            {risks.length ? risks.map((risk, index) => (
+              <div className="risk-row" key={index}>
+                <b>!</b>
+                <div>
+                  <strong>{typeof risk === "string"
+                    ? risk
+                    : risk.title ?? risk.message ?? risk.description ?? risk.type ?? `Risk ${index + 1}`}</strong>
+                  <small>{typeof risk === "object"
+                    ? risk.reason ?? risk.details ?? "Requires human review"
+                    : "Requires human review"}</small>
+                </div>
+              </div>
+            )) : (
+              <div className="risk-row">
+                <b className="safe">✓</b>
+                <div>
+                  <strong>No unresolved risks reported</strong>
+                  <small>This checks recorded constraints only; it does not prove real-world safety.</small>
+                </div>
+              </div>
+            )}
+
+            <details>
+              <summary>Inspect validation JSON</summary>
+              <pre>{pretty(validation)}</pre>
+            </details>
+          </article>
+
+          <article className="panel">
+            <div className="eyebrow">04 / TOOL AUDIT</div>
+            <h2>Agent activity</h2>
+            <p className="muted">Visible tool-call summaries, not hidden model reasoning.</p>
+            {activity.map((entry, index) => (
+              <div className="activity-row" key={`${entry}-${index}`}>
+                <code>{String(index + 1).padStart(2, "0")}</code>
+                <span>{entry}</span>
+              </div>
+            ))}
+            <div className="tool-list">
+              <code>simulate_disruption</code>
+              <code>rebuild_response_plan</code>
+              <code>validate_plan</code>
+            </div>
+          </article>
+        </section>
+
+        <section className="household-section">
+          <div className="eyebrow">05 / FICTIONAL HOUSEHOLD MODEL</div>
+          <h2>The assumptions underneath</h2>
+          <section className="summary-grid">
+            <article className="summary-card">
+              <span className="card-label">PEOPLE</span>
+              <p>
+  {people.map((person) => {
+    const scenarioUnavailable = activeDisruptions.some(
+      (disruption) =>
+        disruption.type === "person_unavailable" &&
+        disruption.personId === person.id
+    );
+
+    const scenarioAvailable =
+      person.available && !scenarioUnavailable;
+
+    return `${person.name}: baseline ${
+      person.available ? "available" : "unavailable"
+    } · scenario ${
+      scenarioAvailable ? "available" : "unavailable"
+    }`;
+  }).join(" · ") || "Loading…"}
+</p>
+            </article>
+            <article className="summary-card">
+              <span className="card-label">RESOURCES</span>
+              <p>{resources.map(r => `${r.name} (${r.quantity} ${r.unit ?? ""})`).join(" · ") || "Loading…"}</p>
+            </article>
+            <article className="summary-card">
+              <span className="card-label">LOCATIONS</span>
+              <p>{locations.map(l => l.name).join(" · ") || "Loading…"}</p>
+            </article>
+          </section>
+        </section>
+
+        <footer className="disclaimer">
+          <strong>SAHAAY — THE BACKUP BRAIN</strong>
+          <span>Preparedness prototype. Follow official emergency instructions. Software validation cannot certify safety.</span>
+        </footer>
+            </main>
+      )}
+            {activeView === "overview" && (
+        <main>
+          <section className="hero">
+            <div>
+              <div className="eyebrow">OVERVIEW / 01</div>
+              <h1>Your household.<br /><em>One backup plan.</em></h1>
+              <p>
+                Inspect your fictional household, understand unresolved
+                issues, and test what happens when the original plan breaks.
+              </p>
+            </div>
+
+            <div className="engine-stamp">
+              <span>DEMO</span>
+              <strong>PLAN<br />STATUS</strong>
+              <small>SIMULATED DATA</small>
+            </div>
+          </section>
+
+          {error && (
+            <div className="error-banner" role="alert">
+              <strong>Action failed</strong>
+              <span>{error}</span>
+              <button onClick={() => {
+                setError("");
+                void refresh().catch(e => setError(e.message));
+              }}>
+                Retry
+              </button>
+            </div>
+          )}
+
+          <section className={`overview-readiness overview-readiness--${outcomeTone}`} data-testid="overview-readiness" aria-live="polite">
+            <div className="overview-readiness__mark" aria-hidden="true">{recoveryFailed ? "!" : partialPlan ? "~" : "✓"}</div>
+            <div className="overview-readiness__copy">
+              <span className="eyebrow">CURRENT PLAN · SIMULATED</span>
+              <h2>{outcomeTitle}</h2>
+              <p>{outcomeDescription}</p>
+            </div>
+            <div className="overview-readiness__meta">
+              <span>{activeDisruptions.length} active disruption{activeDisruptions.length === 1 ? "" : "s"}</span>
+              <span>{unassignedTasks.length} unassigned task{unassignedTasks.length === 1 ? "" : "s"}</span>
+            </div>
+          </section>
+
+          <section className="summary-grid" aria-label="Household summary">
+            <article className="summary-card">
+              <span className="eyebrow">RECOVERY STATUS</span>
+              <h2>{outcomeTitle}</h2>
+              <p>{activeDisruptions.length ? "Status after the active simulated disruptions." : "Starting point before a disruption is introduced."}</p>
+            </article>
+
+            <article className="summary-card">
+              <span className="eyebrow">OPEN RISKS</span>
+              <h2 data-testid="overview-risk-count">{risks.length}</h2>
+              <p>{risks.length === 0 ? "No unresolved risks reported by the planner." : "Items the planner has not resolved and that need review."}</p>
+            </article>
+
+            <article className="summary-card">
+              <span className="eyebrow">HOUSEHOLD MODEL</span>
+              <h2>{people.length} people</h2>
+              <p>{resources.length} resources · {locations.length} locations</p>
+            </article>
+          </section>
+
+          <ResilienceWorkspace
+            household={household}
+            plan={plan}
+            snapshot={snapshot}
+            phase={phase}
+            mode="map"
+          />
+
+          <section className="overview-next panel" data-testid="overview-next-action">
+            <div className="overview-next__copy">
+              <div className="eyebrow">RECOMMENDED NEXT STEP</div>
+              <h2>{activeDisruptions.length || risks.length ? "Review what the planner could not resolve." : "Stress-test the backup plan."}</h2>
+              <p>
+                {activeDisruptions.length || risks.length
+                  ? "Open the Chaos Lab to inspect affected tasks, recovery decisions, validation, and remaining risks."
+                  : "Make a helper unavailable, remove a resource, or block a location. Sahaay will rebuild the plan and show what changed."}
+              </p>
+            </div>
+            <button className="primary-button" onClick={() => setActiveView("chaos")}>
+              {activeDisruptions.length || risks.length ? "REVIEW RECOVERY ↗" : "RUN A RESILIENCE DRILL ↗"}
+            </button>
+          </section>
+
+          <footer className="disclaimer">
+            Sahaay is a preparedness prototype using fictional, simulated
+            scenarios. Software validation does not guarantee real-world safety.
+            Follow official emergency instructions.
+          </footer>
+        </main>
+      )}
+
+      
+{activeView === "household" ? (
+  <main>
+    <section className="hero">
+      <div>
+        <div className="eyebrow">HOUSEHOLD MODEL / EDITOR</div>
+        <h1>Know what you have.<br /><em>Know what can fail.</em></h1>
+        <p>
+          Edit people, their skills and availability, household resources,
+          and locations. Task definitions and IDs remain protected.
+        </p>
+      </div>
+    </section>
+
+    {error && (
+      <div className="error-banner" role="alert">
+        <strong>Could not save or refresh</strong>
+        <span>{error}</span>
+      </div>
+    )}
+
+    {saveMessage && (
+      <div className="success-message" role="status">
+        {saveMessage}
+      </div>
+    )}
+
+    {!draftHousehold ? (
+      <section className="panel">
+        <p>Loading household model…</p>
+      </section>
+    ) : (
+      <>
+        <section className="panel">
+          <div className="eyebrow">01 / PEOPLE</div>
+          <h2>Who can help?</h2>
+          <p>Edit skills as comma-separated values. Keep IDs unchanged so
+            existing task assignments and disruption references remain valid.</p>
+
+          {draftHousehold.people.map((person: Data, index: number) => (
+            <article className="editor-card" key={person.id}>
+              <div className="editor-id">PERSON ID · {person.id}</div>
+
+              <label>
+                Name
+                <input
+                  value={person.name}
+                  maxLength={300}
+                  onChange={(e) =>
+                    updateDraftPerson(index, { name: e.target.value })
+                  }
+                />
+              </label>
+
+              <label>
+                Skills — comma-separated
+                <input
+                  value={person.skills.join(", ")}
+                  placeholder="first-aid, communication"
+                  onChange={(e) =>
+                    updateDraftPerson(index, {
+                      skills: e.target.value
+                        .split(",")
+                        .map((skill: string) => skill.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                />
+              </label>
+
+              <label className="editor-toggle">
+                <input
+                  type="checkbox"
+                  checked={person.available}
+                  onChange={(e) =>
+                    updateDraftPerson(index, { available: e.target.checked })
+                  }
+                />
+                Available for planning
+              </label>
+            </article>
+          ))}
+        </section>
+
+        <section className="panel">
+          <div className="eyebrow">02 / RESOURCES</div>
+          <h2>What can the household use?</h2>
+
+          {draftHousehold.resources.map((resource: Data, index: number) => (
+            <article className="editor-card" key={resource.id}>
+              <div className="editor-id">RESOURCE ID · {resource.id}</div>
+
+              <label>
+                Resource name
+                <input
+                  value={resource.name}
+                  maxLength={300}
+                  onChange={(e) =>
+                    updateDraftResource(index, { name: e.target.value })
+                  }
+                />
+              </label>
+
+              <div className="editor-fields">
+                <label>
+                  Resource type
+                  <select
+                    value={resource.kind}
+                    onChange={(e) =>
+                      updateDraftResource(index, { kind: e.target.value })
+                    }
+                  >
+                    <option value="reusable">Reusable</option>
+                    <option value="consumable">Consumable</option>
+                  </select>
+                </label>
+
+                <label>
+                  Quantity
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={resource.quantity}
+                    onChange={(e) =>
+                      updateDraftResource(index, {
+                        quantity: e.target.value === ""
+                          ? ""
+                          : Number(e.target.value),
+                      })
+                    }
+                  />
+                </label>
+
+                <label>
+                  Unit
+                  <input
+                    value={resource.unit}
+                    maxLength={300}
+                    onChange={(e) =>
+                      updateDraftResource(index, { unit: e.target.value })
+                    }
+                  />
+                </label>
+              </div>
+
+              <label>
+                Stored at
+                <select
+                  value={resource.locationId ?? ""}
+                  onChange={(e) =>
+                    updateDraftResource(index, {
+                      locationId: e.target.value || undefined,
+                    })
+                  }
+                >
+                  <option value="">No specific location</option>
+                  {draftHousehold.locations.map((location: Data) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name} ({location.id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </article>
+          ))}
+        </section>
+
+        <section className="panel">
+          <div className="eyebrow">03 / LOCATIONS</div>
+          <h2>Where can things happen?</h2>
+
+          {draftHousehold.locations.map((location: Data, index: number) => (
+            <article className="editor-card" key={location.id}>
+              <div className="editor-id">LOCATION ID · {location.id}</div>
+
+              <label>
+                Location name
+                <input
+                  value={location.name}
+                  maxLength={300}
+                  onChange={(e) =>
+                    updateDraftLocation(index, { name: e.target.value })
+                  }
+                />
+              </label>
+
+              <label>
+                Description
+                <textarea
+                  value={location.description}
+                  maxLength={500}
+                  rows={2}
+                  onChange={(e) =>
+                    updateDraftLocation(index, {
+                      description: e.target.value,
+                    })
+                  }
+                />
+              </label>
+            </article>
+          ))}
+        </section>
+
+        <section className="panel">
+          <div className="eyebrow">04 / SAVE & VALIDATE</div>
+          <h2>Apply the model</h2>
+          <p>
+            Saving sends the complete household model to the backend.
+            Validation failures should leave the previously saved model intact.
+          </p>
+          <p>
+            {draftHousehold.people.length} people ·{" "}
+            {draftHousehold.tasks.length} tasks ·{" "}
+            {draftHousehold.resources.length} resources ·{" "}
+            {draftHousehold.locations.length} locations
+          </p>
+
+          <div className="button-row">
+            <button
+              disabled={busy || !household}
+              onClick={() => {
+                if (household) {
+                  setDraftHousehold(structuredClone(household));
+                  setSaveMessage("");
+                  setError("");
+                }
+              }}
+            >
+              DISCARD CHANGES
+            </button>
+
+            <button
+              className="primary-button"
+              disabled={busy || !draftHousehold}
+              onClick={() => void saveHouseholdModel()}
+            >
+              {busy ? "SAVING…" : "SAVE & REPLAN ↗"}
+            </button>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="eyebrow">LIVE ENGINE</div>
+          <h2>Current planning result</h2>
+          <p>Status: <strong>{statusLabel}</strong></p>
+          <p>Unresolved risks: <strong>{risks.length}</strong></p>
+          <button
+            onClick={() => setActiveView("chaos")}
+            className="primary-button"
+          >
+            OPEN CHAOS LAB ↗
+          </button>
+        </section>
+      </>
+    )}
+  </main>
+
+) : activeView === "agent" ? (
+  <main>
+    <section className="hero">
+      <div>
+        <div className="eyebrow">04 / AGENT CONSOLE</div>
+        <h1>Agent console.<br /><em>See the work.</em></h1>
+        <p>
+          Inspect recorded actions, current planning results, and validation
+          output. These are tool summaries, not hidden model reasoning.
+        </p>
+      </div>
+    </section>
+
+    {error && (
+      <section className="panel" role="alert">
+        <h2>Latest error</h2>
+        <p>{error}</p>
+      </section>
+    )}
+
+    <section className="summary-grid">
+      <article className="summary-card">
+        <span className="card-label">ENGINE STATUS</span>
+        <h2>{busy ? "PROCESSING" : "READY / IDLE"}</h2>
+        <p>{phase.state === "processing" ? phase.step : "No active request"}</p>
+      </article>
+      <article className="summary-card">
+        <span className="card-label">UNRESOLVED RISKS</span>
+        <h2>{risks.length}</h2>
+        <p>Reported by the planning API</p>
+      </article>
+      <article className="summary-card">
+        <span className="card-label">VALIDATION</span>
+        <h2>{validation ? "RESULT AVAILABLE" : "NOT LOADED"}</h2>
+        <p>Inspect the response below for details.</p>
+      </article>
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">ACTION HISTORY</div>
+      <h2>Recorded tool activity</h2>
+      {activity.length ? (
+        activity.map((entry, index) => (
+          <div className="activity-row" key={`${entry}-${index}`}>
+            <code>{String(index + 1).padStart(2, "0")}</code>
+            <span>{entry}</span>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No activity has been recorded in this session.</p>
+      )}
+      <div className="tool-list">
+        <code>get_current_plan</code>
+        <code>simulate_disruption</code>
+        <code>rebuild_response_plan</code>
+        <code>validate_plan</code>
+        <code>refresh scenario</code>
+        <code>reset_scenario</code>
+      </div>
+    </section>
+
+    <section className="panel">
+      <h2>Current plan</h2>
+      <pre>{pretty(plan ?? "No plan loaded")}</pre>
+      <h2>Validation result</h2>
+      <pre>{pretty(validation ?? "No validation result loaded")}</pre>
+    </section>
+  </main>
+) : activeView === "history" ? (
+  <main>
+    <section className="hero">
+      <div>
+        <div className="eyebrow">05 / EVIDENCE & HISTORY</div>
+        <h1>Every change.<br /><em>Every reason.</em></h1>
+        <p>
+          Review the actions recorded during this browser session and compare
+          the last captured plan with the current planning result.
+        </p>
+      </div>
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">SESSION TIMELINE</div>
+      <h2>Recent events</h2>
+      {activity.length ? (
+        activity.map((entry, index) => (
+          <div className="activity-row" key={`${entry}-${index}`}>
+            <code>{String(activity.length - index).padStart(2, "0")}</code>
+            <span>{entry}</span>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No events recorded yet.</p>
+      )}
+      <p className="muted">
+        This is an in-memory session log, not a persistent audit record.
+      </p>
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">BEFORE / AFTER</div>
+      <h2>Latest recovery comparison</h2>
+      {snapshot ? (
+        <>
+          <p><strong>Disruption:</strong> {snapshot.trigger}</p>
+          <p>
+            <strong>Captured:</strong>{" "}
+            {new Date(snapshot.capturedAt).toLocaleString()}
+          </p>
+          <h3>Plan before the disruption</h3>
+          <pre>{pretty(snapshot.plan)}</pre>
+          <h3>Current plan</h3>
+          <pre>{pretty(plan ?? "No current plan loaded")}</pre>
+        </>
+      ) : (
+        <p>
+          No before-and-after comparison is available. Trigger a disruption
+          in Chaos Lab to capture the plan before recovery.
+        </p>
+      )}
+    </section>
+
+    <section className="panel">
+      <h2>Current unresolved risks</h2>
+      {risks.length ? (
+        <ul>
+          {risks.map((risk, index) => (
+            <li key={index}>
+              {typeof risk === "string"
+                ? risk
+                : risk.title ?? risk.message ?? risk.description ??
+                  risk.type ?? `Risk ${index + 1}`}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>No unresolved risks are currently reported by the API.</p>
+      )}
+      <p className="muted">
+        Evidence shown here reflects the data currently available to this
+        session. It is not proof of real-world safety.
+      </p>
+    </section>
+  </main>
+) : activeView === "offline" ? (
+  <main className="offline-plan">
+    <section className="hero">
+      <div>
+        <div className="eyebrow">06 / OFFLINE PLAN</div>
+        <h1>A plan you can keep.<br /><em>Even offline.</em></h1>
+        <p>
+          Print this fictional household plan for reference when the dashboard
+          is unavailable. Verify all details and follow official emergency
+          instructions.
+        </p>
+      </div>
+      <button
+        type="button"
+        className="primary-button no-print"
+        onClick={() => window.print()}
+      >
+        PRINT / SAVE AS PDF ↗
+      </button>
+    </section>
+
+    {error && <p className="error-banner" role="alert">{error}</p>}
+
+    <section className="panel">
+      <div className="eyebrow">HOUSEHOLD</div>
+      <h2>People and responsibilities</h2>
+      {list(household?.people).length ? (
+        <ul>
+          {list(household?.people).map((person, index) => (
+            <li key={person.id ?? index}>
+              <strong>{person.name ?? person.id ?? `Person ${index + 1}`}</strong>
+              {" — "}
+              {person.available === false ? "Unavailable in baseline data" : "Available in baseline data"}
+              {Array.isArray(person.skills) && person.skills.length
+                ? ` · Skills: ${person.skills.join(", ")}`
+                : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>Household people have not loaded.</p>}
+    </section>
+
+
+<section className="panel">
+  <div className="eyebrow">BEFORE / AFTER</div>
+  <h2>Latest recovery comparison</h2>
+
+  {snapshot ? (
+    <>
+      <div className="scenario-state">
+        <strong>LAST SIMULATED DISRUPTION</strong>
+        <p>{snapshot.trigger}</p>
+        <p className="muted">
+          Captured {new Date(snapshot.capturedAt).toLocaleString()}
+        </p>
+      </div>
+
+      <ResilienceWorkspace
+        household={household}
+        plan={plan}
+        snapshot={snapshot}
+        phase={phase}
+        mode="full"
+      />
+
+      <details>
+        <summary>Inspect captured plan JSON</summary>
+        <pre>{pretty(snapshot.plan)}</pre>
+      </details>
+
+      <details>
+        <summary>Inspect current plan JSON</summary>
+        <pre>{pretty(plan ?? "No current plan loaded")}</pre>
+      </details>
+    </>
+  ) : (
+    <p>
+      No before-and-after comparison is available yet.
+      Trigger a disruption in Chaos Lab to capture the plan
+      before recovery.
+    </p>
+  )}
+</section>
+
+
+    <section className="panel">
+      <h2>Resources and locations</h2>
+      <h3>Resources</h3>
+      {list(household?.resources).length ? (
+        <ul>
+          {list(household?.resources).map((resource, index) => (
+            <li key={resource.id ?? index}>
+              {resource.name ?? resource.id ?? `Resource ${index + 1}`}
+              {resource.quantity !== undefined ? ` · Quantity: ${resource.quantity}` : ""}
+              {resource.available === false ? " · Unavailable" : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>No resources have loaded.</p>}
+      <h3>Locations</h3>
+      {list(household?.locations).length ? (
+        <ul>
+          {list(household?.locations).map((location, index) => (
+            <li key={location.id ?? index}>
+              {location.name ?? location.id ?? `Location ${index + 1}`}
+              {location.accessible === false ? " · Inaccessible" : ""}
+              {location.description ? ` · ${location.description}` : ""}
+            </li>
+          ))}
+        </ul>
+      ) : <p>No locations have loaded.</p>}
+    </section>
+
+    <section className="panel">
+      <div className="eyebrow">WARNINGS</div>
+      <h2>Unresolved risks</h2>
+      {risks.length ? (
+        <ul>
+          {risks.map((risk, index) => (
+            <li key={index}>
+              {typeof risk === "string"
+                ? risk
+                : risk.title ?? risk.message ?? risk.description ??
+                  risk.type ?? `Risk ${index + 1}`}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p>No unresolved risks are currently reported by the planner.</p>
+      )}
+      <p>
+        This document is generated from a simulated preparedness prototype.
+        Confirm assignments, supplies, and safe procedures with household
+        members. In an emergency, follow official local guidance.
+      </p>
+    </section>
+  </main>
+) : null}
+
+        </div>
+      </div>
+     </div>
+   
+  );
+}
+
